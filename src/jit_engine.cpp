@@ -13,6 +13,7 @@ JitEngine::~JitEngine() {
 
 bool JitEngine::Bind() {
     if (m_bound) return true;
+    m_engine->SetEngineProperty(asEP_INCLUDE_JIT_INSTRUCTIONS, true);
     int r = m_engine->SetJITCompiler(m_compiler);
     if (r < 0) return false;
     m_bound = true;

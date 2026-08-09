@@ -1,15 +1,22 @@
 #include "jit_compiler.h"
+#include "emit.h"
 
 namespace asjitx86 {
 
 X86JitCompiler::X86JitCompiler() = default;
 X86JitCompiler::~X86JitCompiler() = default;
 
-int X86JitCompiler::CompileFunction(asIScriptFunction*, asJITFunction* output) {
-    if (output) *output = nullptr;
-    return asERROR;
+int X86JitCompiler::CompileFunction(asIScriptFunction* function, asJITFunction* output) {
+    if (!function || !output) return asERROR;
+    std::lock_guard<std::mutex> lock(m_mutex);
+    *output = nullptr;
+    return EmitFunction(m_runtime, function, output);
 }
 
-void X86JitCompiler::ReleaseJITFunction(asJITFunction) {}
+void X86JitCompiler::ReleaseJITFunction(asJITFunction func) {
+    if (!func) return;
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_runtime.release(reinterpret_cast<void*>(func));
+}
 
 }

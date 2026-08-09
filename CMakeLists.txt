@@ -39,6 +39,9 @@ target_sources(as_jit_x86 PRIVATE
     src/as_jit_api.cpp
     src/jit_engine.cpp
     src/jit_compiler.cpp
+    src/bc_helpers.cpp
+    src/bc_info.cpp
+    src/emit.cpp
 )
 
 target_include_directories(as_jit_x86
