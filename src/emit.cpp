@@ -84,6 +84,10 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
         }
         case asBC_JZ:
         case asBC_JNZ:
+        case asBC_JS:
+        case asBC_JNS:
+        case asBC_JP:
+        case asBC_JNP:
         case asBC_JLowZ:
         case asBC_JLowNZ: {
             int64_t target = int64_t(in.off) + 2 + asBC_INTARG(bc + in.off);
@@ -93,10 +97,17 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
                 cc.cmp(x86::byte_ptr(regs, offsetof(asSVMRegisters, valueRegister)), 0);
             else
                 cc.cmp(x86::dword_ptr(regs, offsetof(asSVMRegisters, valueRegister)), 0);
-            if (in.op == asBC_JZ || in.op == asBC_JLowZ)
-                cc.jz(labels[it->second]);
-            else
-                cc.jnz(labels[it->second]);
+            switch (in.op) {
+            case asBC_JZ:     cc.jz(labels[it->second]); break;
+            case asBC_JNZ:    cc.jnz(labels[it->second]); break;
+            case asBC_JS:     cc.js(labels[it->second]); break;
+            case asBC_JNS:    cc.jns(labels[it->second]); break;
+            case asBC_JP:     cc.jg(labels[it->second]); break;
+            case asBC_JNP:    cc.jle(labels[it->second]); break;
+            case asBC_JLowZ:  cc.jz(labels[it->second]); break;
+            case asBC_JLowNZ: cc.jnz(labels[it->second]); break;
+            default: break;
+            }
             break;
         }
         default: {

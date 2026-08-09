@@ -1333,6 +1333,389 @@ static int BcThiscall1(asSVMRegisters* regs, const asDWORD* bc) {
     return JITBC_EXIT;
 }
 
+static int BcJmpP(asSVMRegisters* regs, const asDWORD* bc) {
+    regs->programPointer = const_cast<asDWORD*>(bc + 1 + (*(int*)(regs->stackFramePointer - asBC_SWORDARG0(bc))) * 2);
+    return JITBC_EXIT;
+}
+
+static int BcSuspend(asSVMRegisters* regs, const asDWORD* bc) {
+    auto* ctx = Ctx(regs);
+    if (regs->doProcessSuspend) {
+        if (ctx->m_lineCallback) {
+            regs->programPointer = const_cast<asDWORD*>(bc);
+            ctx->CallLineCallback();
+        }
+        if (ctx->m_doSuspend) {
+            regs->programPointer = NextBc(bc, 1);
+            ctx->m_status = asEXECUTION_SUSPENDED;
+            return JITBC_EXIT;
+        }
+    }
+    regs->programPointer = NextBc(bc, 1);
+    return JITBC_CONTINUE;
+}
+
+static int BcFree(asSVMRegisters* regs, const asDWORD* bc) {
+    auto* ctx = Ctx(regs);
+    asPWORD* a = (asPWORD*)(asPWORD)(regs->stackFramePointer - asBC_SWORDARG0(bc));
+    if (*a) {
+        asCObjectType* objType = (asCObjectType*)asBC_PTRARG(bc);
+        asSTypeBehaviour* beh = &objType->beh;
+        regs->programPointer = const_cast<asDWORD*>(bc);
+        if (objType->flags & asOBJ_REF) {
+            assert((objType->flags & asOBJ_NOCOUNT) || beh->release);
+            if (beh->release)
+                ctx->m_engine->CallObjectMethod((void*)(asPWORD)*a, beh->release);
+        }
+        else {
+            if (beh->destruct)
+                ctx->m_engine->CallObjectMethod((void*)(asPWORD)*a, beh->destruct);
+            else if (objType->flags & asOBJ_LIST_PATTERN)
+                ctx->m_engine->DestroyList((asBYTE*)(asPWORD)*a, objType);
+            ctx->m_engine->CallFree((void*)(asPWORD)*a);
+        }
+        *a = 0;
+    }
+    regs->programPointer = NextBc(bc, 1 + AS_PTR_SIZE);
+    return JITBC_CONTINUE;
+}
+
+static int BcLoadObj(asSVMRegisters* regs, const asDWORD* bc) {
+    void** a = (void**)(regs->stackFramePointer - asBC_SWORDARG0(bc));
+    regs->objectType = 0;
+    regs->objectRegister = *a;
+    *a = 0;
+    regs->programPointer = NextBc(bc, 1);
+    return JITBC_CONTINUE;
+}
+
+static int BcStoreObj(asSVMRegisters* regs, const asDWORD* bc) {
+    *(asPWORD*)(regs->stackFramePointer - asBC_SWORDARG0(bc)) = asPWORD(regs->objectRegister);
+    regs->objectRegister = 0;
+    regs->programPointer = NextBc(bc, 1);
+    return JITBC_CONTINUE;
+}
+
+static int BcGetObj(asSVMRegisters* regs, const asDWORD* bc) {
+    asPWORD* a = (asPWORD*)(regs->stackPointer + asBC_WORDARG0(bc));
+    asPWORD offset = *a;
+    asPWORD* v = (asPWORD*)(regs->stackFramePointer - offset);
+    *a = *v;
+    *v = 0;
+    regs->programPointer = NextBc(bc, 1);
+    return JITBC_CONTINUE;
+}
+
+static int BcGetObjRef(asSVMRegisters* regs, const asDWORD* bc) {
+    asPWORD* a = (asPWORD*)(regs->stackPointer + asBC_WORDARG0(bc));
+    *(asPWORD**)a = *(asPWORD**)(regs->stackFramePointer - *a);
+    regs->programPointer = NextBc(bc, 1);
+    return JITBC_CONTINUE;
+}
+
+static int BcGetRef(asSVMRegisters* regs, const asDWORD* bc) {
+    asPWORD* a = (asPWORD*)(regs->stackPointer + asBC_WORDARG0(bc));
+    *(asPWORD**)a = (asPWORD*)(regs->stackFramePointer - (int)*a);
+    regs->programPointer = NextBc(bc, 1);
+    return JITBC_CONTINUE;
+}
+
+static int BcRefCpy(asSVMRegisters* regs, const asDWORD* bc) {
+    auto* ctx = Ctx(regs);
+    asCObjectType* objType = (asCObjectType*)asBC_PTRARG(bc);
+    asSTypeBehaviour* beh = &objType->beh;
+    void** d = (void**)*(asPWORD*)regs->stackPointer;
+    regs->stackPointer += AS_PTR_SIZE;
+    void* s = (void*)*(asPWORD*)regs->stackPointer;
+    regs->programPointer = const_cast<asDWORD*>(bc);
+    if (!(objType->flags & (asOBJ_NOCOUNT | asOBJ_VALUE))) {
+        if (*d != 0 && beh->release)
+            ctx->m_engine->CallObjectMethod(*d, beh->release);
+        if (s != 0 && beh->addref)
+            ctx->m_engine->CallObjectMethod(s, beh->addref);
+    }
+    *d = s;
+    regs->programPointer = NextBc(bc, 1 + AS_PTR_SIZE);
+    return JITBC_CONTINUE;
+}
+
+static int BcChkRef(asSVMRegisters* regs, const asDWORD* bc) {
+    asPWORD a = *(asPWORD*)regs->stackPointer;
+    if (a == 0) {
+        regs->programPointer = const_cast<asDWORD*>(bc);
+        Ctx(regs)->SetInternalException(TXT_NULL_POINTER_ACCESS);
+        return JITBC_EXIT;
+    }
+    regs->programPointer = NextBc(bc, 1);
+    return JITBC_CONTINUE;
+}
+
+static int BcChkRefS(asSVMRegisters* regs, const asDWORD* bc) {
+    asPWORD* a = (asPWORD*)*(asPWORD*)regs->stackPointer;
+    if (*a == 0) {
+        regs->programPointer = const_cast<asDWORD*>(bc);
+        Ctx(regs)->SetInternalException(TXT_NULL_POINTER_ACCESS);
+        return JITBC_EXIT;
+    }
+    regs->programPointer = NextBc(bc, 1);
+    return JITBC_CONTINUE;
+}
+
+static int BcChkNullV(asSVMRegisters* regs, const asDWORD* bc) {
+    asDWORD* a = *(asDWORD**)(regs->stackFramePointer - asBC_SWORDARG0(bc));
+    if (a == 0) {
+        regs->programPointer = const_cast<asDWORD*>(bc);
+        Ctx(regs)->SetInternalException(TXT_NULL_POINTER_ACCESS);
+        return JITBC_EXIT;
+    }
+    regs->programPointer = NextBc(bc, 1);
+    return JITBC_CONTINUE;
+}
+
+static int BcChkNullS(asSVMRegisters* regs, const asDWORD* bc) {
+    asPWORD a = *(asPWORD*)(regs->stackPointer + asBC_WORDARG0(bc));
+    if (a == 0) {
+        regs->programPointer = const_cast<asDWORD*>(bc);
+        Ctx(regs)->SetInternalException(TXT_NULL_POINTER_ACCESS);
+        return JITBC_EXIT;
+    }
+    regs->programPointer = NextBc(bc, 1);
+    return JITBC_CONTINUE;
+}
+
+static int BcPshNull(asSVMRegisters* regs, const asDWORD* bc) {
+    regs->stackPointer -= AS_PTR_SIZE;
+    *(asPWORD*)regs->stackPointer = 0;
+    regs->programPointer = NextBc(bc, 1);
+    return JITBC_CONTINUE;
+}
+
+static int BcClrVPtr(asSVMRegisters* regs, const asDWORD* bc) {
+    *(asPWORD*)(regs->stackFramePointer - asBC_SWORDARG0(bc)) = 0;
+    regs->programPointer = NextBc(bc, 1);
+    return JITBC_CONTINUE;
+}
+
+static int BcObjType(asSVMRegisters* regs, const asDWORD* bc) {
+    regs->stackPointer -= AS_PTR_SIZE;
+    *(asPWORD*)regs->stackPointer = asBC_PTRARG(bc);
+    regs->programPointer = NextBc(bc, 1 + AS_PTR_SIZE);
+    return JITBC_CONTINUE;
+}
+
+static int BcTypeId(asSVMRegisters* regs, const asDWORD* bc) {
+    --regs->stackPointer;
+    *regs->stackPointer = asBC_DWORDARG(bc);
+    regs->programPointer = NextBc(bc, 2);
+    return JITBC_CONTINUE;
+}
+
+static int BcCast(asSVMRegisters* regs, const asDWORD* bc) {
+    auto* ctx = Ctx(regs);
+    asDWORD** a = (asDWORD**)*(asPWORD*)regs->stackPointer;
+    if (a && *a) {
+        asDWORD typeId = asBC_DWORDARG(bc);
+        asCScriptObject* obj = (asCScriptObject*)*a;
+        asCObjectType* objType = (asCObjectType*)obj->GetObjectType();
+        asCObjectType* to = ctx->m_engine->GetObjectTypeFromTypeId(typeId);
+        assert(objType->flags & asOBJ_SCRIPT_OBJECT);
+        assert(to->flags & asOBJ_SCRIPT_OBJECT);
+        if (objType->Implements(to) || objType->DerivesFrom(to)) {
+            regs->objectType = 0;
+            regs->objectRegister = obj;
+            obj->AddRef();
+        }
+        else {
+            assert(regs->objectRegister == 0);
+        }
+    }
+    regs->stackPointer += AS_PTR_SIZE;
+    regs->programPointer = NextBc(bc, 2);
+    return JITBC_CONTINUE;
+}
+
+static int BcFuncPtr(asSVMRegisters* regs, const asDWORD* bc) {
+    regs->stackPointer -= AS_PTR_SIZE;
+    *(asPWORD*)regs->stackPointer = asBC_PTRARG(bc);
+    regs->programPointer = NextBc(bc, 1 + AS_PTR_SIZE);
+    return JITBC_CONTINUE;
+}
+
+static int BcLoadThisR(asSVMRegisters* regs, const asDWORD* bc) {
+    asPWORD tmp = *(asPWORD*)regs->stackFramePointer;
+    if (tmp == 0) {
+        regs->programPointer = const_cast<asDWORD*>(bc);
+        Ctx(regs)->SetInternalException(TXT_NULL_POINTER_ACCESS);
+        return JITBC_EXIT;
+    }
+    tmp = tmp + asBC_SWORDARG0(bc);
+    *(asPWORD*)&regs->valueRegister = tmp;
+    regs->programPointer = NextBc(bc, 2);
+    return JITBC_CONTINUE;
+}
+
+static int BcLoadRObjR(asSVMRegisters* regs, const asDWORD* bc) {
+    asPWORD tmp = *(asPWORD*)(regs->stackFramePointer - asBC_SWORDARG0(bc));
+    if (tmp == 0) {
+        regs->programPointer = const_cast<asDWORD*>(bc);
+        Ctx(regs)->SetInternalException(TXT_NULL_POINTER_ACCESS);
+        return JITBC_EXIT;
+    }
+    tmp = tmp + asBC_SWORDARG1(bc);
+    *(asPWORD*)&regs->valueRegister = tmp;
+    regs->programPointer = NextBc(bc, 3);
+    return JITBC_CONTINUE;
+}
+
+static int BcLoadVObjR(asSVMRegisters* regs, const asDWORD* bc) {
+    asPWORD tmp = (asPWORD)(regs->stackFramePointer - asBC_SWORDARG0(bc));
+    tmp = tmp + asBC_SWORDARG1(bc);
+    *(asPWORD*)&regs->valueRegister = tmp;
+    regs->programPointer = NextBc(bc, 3);
+    return JITBC_CONTINUE;
+}
+
+static int BcRefCpyV(asSVMRegisters* regs, const asDWORD* bc) {
+    auto* ctx = Ctx(regs);
+    asCObjectType* objType = (asCObjectType*)asBC_PTRARG(bc);
+    asSTypeBehaviour* beh = &objType->beh;
+    void** d = (void**)(asPWORD)(regs->stackFramePointer - asBC_SWORDARG0(bc));
+    void* s = (void*)*(asPWORD*)regs->stackPointer;
+    regs->programPointer = const_cast<asDWORD*>(bc);
+    if (!(objType->flags & (asOBJ_NOCOUNT | asOBJ_VALUE))) {
+        if (*d != 0 && beh->release)
+            ctx->m_engine->CallObjectMethod(*d, beh->release);
+        if (s != 0 && beh->addref)
+            ctx->m_engine->CallObjectMethod(s, beh->addref);
+    }
+    *d = s;
+    regs->programPointer = NextBc(bc, 1 + AS_PTR_SIZE);
+    return JITBC_CONTINUE;
+}
+
+static int BcAllocMem(asSVMRegisters* regs, const asDWORD* bc) {
+    asUINT size = asBC_DWORDARG(bc);
+    asBYTE** var = (asBYTE**)(regs->stackFramePointer - asBC_SWORDARG0(bc));
+    *var = asNEWARRAY(asBYTE, size);
+    memset(*var, 0, size);
+    regs->programPointer = NextBc(bc, 2);
+    return JITBC_CONTINUE;
+}
+
+static int BcSetListSize(asSVMRegisters* regs, const asDWORD* bc) {
+    asBYTE* var = *(asBYTE**)(regs->stackFramePointer - asBC_SWORDARG0(bc));
+    asUINT off = asBC_DWORDARG(bc);
+    asUINT size = asBC_DWORDARG(bc + 1);
+    assert(var);
+    *(asUINT*)(var + off) = size;
+    regs->programPointer = NextBc(bc, 3);
+    return JITBC_CONTINUE;
+}
+
+static int BcPshListElmnt(asSVMRegisters* regs, const asDWORD* bc) {
+    asBYTE* var = *(asBYTE**)(regs->stackFramePointer - asBC_SWORDARG0(bc));
+    asUINT off = asBC_DWORDARG(bc);
+    assert(var);
+    regs->stackPointer -= AS_PTR_SIZE;
+    *(asPWORD*)regs->stackPointer = asPWORD(var + off);
+    regs->programPointer = NextBc(bc, 2);
+    return JITBC_CONTINUE;
+}
+
+static int BcSetListType(asSVMRegisters* regs, const asDWORD* bc) {
+    asBYTE* var = *(asBYTE**)(regs->stackFramePointer - asBC_SWORDARG0(bc));
+    asUINT off = asBC_DWORDARG(bc);
+    asUINT type = asBC_DWORDARG(bc + 1);
+    assert(var);
+    *(asUINT*)(var + off) = type;
+    regs->programPointer = NextBc(bc, 3);
+    return JITBC_CONTINUE;
+}
+
+static int BcPowi(asSVMRegisters* regs, const asDWORD* bc) {
+    bool isOverflow;
+    *(int*)(regs->stackFramePointer - asBC_SWORDARG0(bc)) = as_powi(*(int*)(regs->stackFramePointer - asBC_SWORDARG1(bc)), *(int*)(regs->stackFramePointer - asBC_SWORDARG2(bc)), isOverflow);
+    if (isOverflow) {
+        regs->programPointer = const_cast<asDWORD*>(bc);
+        Ctx(regs)->SetInternalException(TXT_POW_OVERFLOW);
+        return JITBC_EXIT;
+    }
+    regs->programPointer = NextBc(bc, 2);
+    return JITBC_CONTINUE;
+}
+
+static int BcPowu(asSVMRegisters* regs, const asDWORD* bc) {
+    bool isOverflow;
+    *(asDWORD*)(regs->stackFramePointer - asBC_SWORDARG0(bc)) = as_powu(*(asDWORD*)(regs->stackFramePointer - asBC_SWORDARG1(bc)), *(asDWORD*)(regs->stackFramePointer - asBC_SWORDARG2(bc)), isOverflow);
+    if (isOverflow) {
+        regs->programPointer = const_cast<asDWORD*>(bc);
+        Ctx(regs)->SetInternalException(TXT_POW_OVERFLOW);
+        return JITBC_EXIT;
+    }
+    regs->programPointer = NextBc(bc, 2);
+    return JITBC_CONTINUE;
+}
+
+static int BcPowf(asSVMRegisters* regs, const asDWORD* bc) {
+    float r = powf(*(float*)(regs->stackFramePointer - asBC_SWORDARG1(bc)), *(float*)(regs->stackFramePointer - asBC_SWORDARG2(bc)));
+    *(float*)(regs->stackFramePointer - asBC_SWORDARG0(bc)) = r;
+    if (r == float(HUGE_VAL)) {
+        regs->programPointer = const_cast<asDWORD*>(bc);
+        Ctx(regs)->SetInternalException(TXT_POW_OVERFLOW);
+        return JITBC_EXIT;
+    }
+    regs->programPointer = NextBc(bc, 2);
+    return JITBC_CONTINUE;
+}
+
+static int BcPowd(asSVMRegisters* regs, const asDWORD* bc) {
+    double r = pow(*(double*)(regs->stackFramePointer - asBC_SWORDARG1(bc)), *(double*)(regs->stackFramePointer - asBC_SWORDARG2(bc)));
+    *(double*)(regs->stackFramePointer - asBC_SWORDARG0(bc)) = r;
+    if (r == HUGE_VAL) {
+        regs->programPointer = const_cast<asDWORD*>(bc);
+        Ctx(regs)->SetInternalException(TXT_POW_OVERFLOW);
+        return JITBC_EXIT;
+    }
+    regs->programPointer = NextBc(bc, 2);
+    return JITBC_CONTINUE;
+}
+
+static int BcPowdi(asSVMRegisters* regs, const asDWORD* bc) {
+    double r = pow(*(double*)(regs->stackFramePointer - asBC_SWORDARG1(bc)), *(int*)(regs->stackFramePointer - asBC_SWORDARG2(bc)));
+    *(double*)(regs->stackFramePointer - asBC_SWORDARG0(bc)) = r;
+    if (r == HUGE_VAL) {
+        regs->programPointer = const_cast<asDWORD*>(bc);
+        Ctx(regs)->SetInternalException(TXT_POW_OVERFLOW);
+        return JITBC_EXIT;
+    }
+    regs->programPointer = NextBc(bc, 2);
+    return JITBC_CONTINUE;
+}
+
+static int BcPowi64(asSVMRegisters* regs, const asDWORD* bc) {
+    bool isOverflow;
+    *(asINT64*)(regs->stackFramePointer - asBC_SWORDARG0(bc)) = as_powi64(*(asINT64*)(regs->stackFramePointer - asBC_SWORDARG1(bc)), *(asINT64*)(regs->stackFramePointer - asBC_SWORDARG2(bc)), isOverflow);
+    if (isOverflow) {
+        regs->programPointer = const_cast<asDWORD*>(bc);
+        Ctx(regs)->SetInternalException(TXT_POW_OVERFLOW);
+        return JITBC_EXIT;
+    }
+    regs->programPointer = NextBc(bc, 2);
+    return JITBC_CONTINUE;
+}
+
+static int BcPowu64(asSVMRegisters* regs, const asDWORD* bc) {
+    bool isOverflow;
+    *(asQWORD*)(regs->stackFramePointer - asBC_SWORDARG0(bc)) = as_powu64(*(asQWORD*)(regs->stackFramePointer - asBC_SWORDARG1(bc)), *(asQWORD*)(regs->stackFramePointer - asBC_SWORDARG2(bc)), isOverflow);
+    if (isOverflow) {
+        regs->programPointer = const_cast<asDWORD*>(bc);
+        Ctx(regs)->SetInternalException(TXT_POW_OVERFLOW);
+        return JITBC_EXIT;
+    }
+    regs->programPointer = NextBc(bc, 2);
+    return JITBC_CONTINUE;
+}
+
 }
 
 int JitBcFallback(asSVMRegisters* regs, const asDWORD* bc) {
@@ -1390,6 +1773,8 @@ int JitBcFallback(asSVMRegisters* regs, const asDWORD* bc) {
     case asBC_STR:       return BcStr(regs, bc);
     case asBC_SetV4:     return BcSetV4(regs, bc);
     case asBC_SetV8:     return BcSetV8(regs, bc);
+    case asBC_SetV1:     return BcSetV4(regs, bc);
+    case asBC_SetV2:     return BcSetV4(regs, bc);
     case asBC_ADDSi:     return BcAddSi(regs, bc);
     case asBC_CpyVtoV4:  return BcCpyVtoV4(regs, bc);
     case asBC_CpyVtoV8:  return BcCpyVtoV8(regs, bc);
@@ -1493,8 +1878,43 @@ int JitBcFallback(asSVMRegisters* regs, const asDWORD* bc) {
     case asBC_CallPtr:   return BcCallPtr(regs, bc);
     case asBC_ALLOC:     return BcAlloc(regs, bc);
     case asBC_Thiscall1: return BcThiscall1(regs, bc);
+    case asBC_JMPP:      return BcJmpP(regs, bc);
+    case asBC_SUSPEND:   return BcSuspend(regs, bc);
+    case asBC_FREE:      return BcFree(regs, bc);
+    case asBC_LOADOBJ:   return BcLoadObj(regs, bc);
+    case asBC_STOREOBJ:  return BcStoreObj(regs, bc);
+    case asBC_GETOBJ:    return BcGetObj(regs, bc);
+    case asBC_GETOBJREF: return BcGetObjRef(regs, bc);
+    case asBC_GETREF:    return BcGetRef(regs, bc);
+    case asBC_REFCPY:    return BcRefCpy(regs, bc);
+    case asBC_CHKREF:    return BcChkRef(regs, bc);
+    case asBC_ChkRefS:   return BcChkRefS(regs, bc);
+    case asBC_ChkNullV:  return BcChkNullV(regs, bc);
+    case asBC_ChkNullS:  return BcChkNullS(regs, bc);
+    case asBC_PshNull:   return BcPshNull(regs, bc);
+    case asBC_ClrVPtr:   return BcClrVPtr(regs, bc);
+    case asBC_OBJTYPE:   return BcObjType(regs, bc);
+    case asBC_TYPEID:    return BcTypeId(regs, bc);
+    case asBC_Cast:      return BcCast(regs, bc);
+    case asBC_FuncPtr:   return BcFuncPtr(regs, bc);
+    case asBC_LoadThisR: return BcLoadThisR(regs, bc);
+    case asBC_LoadRObjR: return BcLoadRObjR(regs, bc);
+    case asBC_LoadVObjR: return BcLoadVObjR(regs, bc);
+    case asBC_RefCpyV:   return BcRefCpyV(regs, bc);
+    case asBC_AllocMem:  return BcAllocMem(regs, bc);
+    case asBC_SetListSize:  return BcSetListSize(regs, bc);
+    case asBC_PshListElmnt: return BcPshListElmnt(regs, bc);
+    case asBC_SetListType:  return BcSetListType(regs, bc);
+    case asBC_POWi:      return BcPowi(regs, bc);
+    case asBC_POWu:      return BcPowu(regs, bc);
+    case asBC_POWf:      return BcPowf(regs, bc);
+    case asBC_POWd:      return BcPowd(regs, bc);
+    case asBC_POWdi:     return BcPowdi(regs, bc);
+    case asBC_POWi64:    return BcPowi64(regs, bc);
+    case asBC_POWu64:    return BcPowu64(regs, bc);
     default:
-        return JITBC_CONTINUE;
+        assert(false);
+        return JITBC_EXIT;
     }
 }
 
