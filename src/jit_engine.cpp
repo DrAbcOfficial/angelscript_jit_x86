@@ -4,10 +4,12 @@
 namespace asjitx86 {
 
 JitEngine::JitEngine(asIScriptEngine* engine)
-    : m_engine(engine), m_compiler(new X86JitCompiler()), m_bound(false) {}
+    : m_engine(engine), m_compiler(new X86JitCompiler()), m_bound(false) {
+    m_engine->AddRef();
+}
 
 JitEngine::~JitEngine() {
-    Unbind();
+    m_engine->Release();
     delete m_compiler;
 }
 
@@ -21,8 +23,6 @@ bool JitEngine::Bind() {
 }
 
 void JitEngine::Unbind() {
-    if (!m_bound) return;
-    m_engine->SetJITCompiler(nullptr);
     m_bound = false;
 }
 

@@ -46,6 +46,7 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
     Error err = code.init(runtime.environment(), runtime.cpu_features());
     if (err != kErrorOk) return asERROR;
 
+
     x86::Compiler cc(&code);
     FuncNode* fnNode = cc.add_func(FuncSignature::build<void, asSVMRegisters*, asPWORD>());
     if (!fnNode) return asERROR;

@@ -54,3 +54,8 @@ target_include_directories(as_jit_x86
 target_compile_definitions(as_jit_x86 PRIVATE ASMJIT_STATIC)
 
 target_link_libraries(as_jit_x86 PRIVATE angelscript asmjit::asmjit)
+
+if(ASJITX86_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
