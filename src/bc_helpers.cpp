@@ -2,6 +2,8 @@
 #include "bc_info.h"
 
 #include "as_context.h"
+#include "as_scriptengine.h"
+#include "as_scriptobject.h"
 #include "as_texts.h"
 
 #include <cassert>
@@ -1133,6 +1135,204 @@ static int BcJitEntry(asSVMRegisters* regs, const asDWORD* bc) {
     return JITBC_CONTINUE;
 }
 
+static int BcCall(asSVMRegisters* regs, const asDWORD* bc) {
+    auto* ctx = Ctx(regs);
+    int i = asBC_INTARG(bc);
+    regs->programPointer = NextBc(bc, 2);
+    ctx->CallScriptFunction(ctx->m_engine->scriptFunctions[i]);
+    return JITBC_EXIT;
+}
+
+static int BcRet(asSVMRegisters* regs, const asDWORD* bc) {
+    auto* ctx = Ctx(regs);
+    if (ctx->m_callStack.GetLength() == 0 ||
+        ctx->m_callStack[ctx->m_callStack.GetLength() - CALLSTACK_FRAME_SIZE] == 0) {
+        ctx->m_status = asEXECUTION_FINISHED;
+        return JITBC_EXIT;
+    }
+    asWORD w = asBC_WORDARG0(bc);
+    ctx->PopCallState();
+    regs->stackPointer += w;
+    return JITBC_EXIT;
+}
+
+static int BcCallSys(asSVMRegisters* regs, const asDWORD* bc) {
+    auto* ctx = Ctx(regs);
+    int i = asBC_INTARG(bc);
+    regs->programPointer = const_cast<asDWORD*>(bc);
+    regs->stackPointer += CallSystemFunction(i, ctx);
+    regs->programPointer = NextBc(bc, 2);
+    if (regs->doProcessSuspend) {
+        if (ctx->m_doSuspend) {
+            ctx->m_status = asEXECUTION_SUSPENDED;
+            return JITBC_EXIT;
+        }
+        if (ctx->m_status != asEXECUTION_ACTIVE)
+            return JITBC_EXIT;
+    }
+    return JITBC_EXIT;
+}
+
+static int BcCallBnd(asSVMRegisters* regs, const asDWORD* bc) {
+    auto* ctx = Ctx(regs);
+    int i = asBC_INTARG(bc);
+    regs->programPointer = const_cast<asDWORD*>(bc);
+    int funcId = ctx->m_engine->importedFunctions[i & ~FUNC_IMPORTED]->boundFunctionId;
+    if (funcId == -1) {
+        regs->programPointer += 2;
+        ctx->m_needToCleanupArgs = true;
+        ctx->SetInternalException(TXT_UNBOUND_FUNCTION);
+        return JITBC_EXIT;
+    }
+    asCScriptFunction* func = ctx->m_engine->GetScriptFunction(funcId);
+    if (func->funcType == asFUNC_SCRIPT) {
+        regs->programPointer += 2;
+        ctx->CallScriptFunction(func);
+    }
+    else if (func->funcType == asFUNC_SYSTEM) {
+        regs->stackPointer += CallSystemFunction(func->id, ctx);
+        regs->programPointer += 2;
+    }
+    else {
+        assert(func->funcType == asFUNC_DELEGATE);
+    }
+    return JITBC_EXIT;
+}
+
+static int BcCallIntf(asSVMRegisters* regs, const asDWORD* bc) {
+    auto* ctx = Ctx(regs);
+    int i = asBC_INTARG(bc);
+    regs->programPointer = NextBc(bc, 2);
+    ctx->CallInterfaceMethod(ctx->m_engine->GetScriptFunction(i));
+    return JITBC_EXIT;
+}
+
+static int BcCallPtr(asSVMRegisters* regs, const asDWORD* bc) {
+    auto* ctx = Ctx(regs);
+    asCScriptFunction* func = *(asCScriptFunction**)(regs->stackFramePointer - asBC_SWORDARG0(bc));
+    regs->programPointer = const_cast<asDWORD*>(bc);
+    if (func == 0) {
+        regs->programPointer++;
+        ctx->m_needToCleanupArgs = true;
+        ctx->SetInternalException(TXT_UNBOUND_FUNCTION);
+        return JITBC_EXIT;
+    }
+    if (func->funcType == asFUNC_SCRIPT) {
+        regs->programPointer++;
+        ctx->CallScriptFunction(func);
+    }
+    else if (func->funcType == asFUNC_DELEGATE) {
+        regs->stackPointer -= AS_PTR_SIZE;
+        *(asPWORD*)regs->stackPointer = asPWORD(func->objForDelegate);
+        if (func->funcForDelegate->funcType == asFUNC_SYSTEM) {
+            regs->stackPointer += CallSystemFunction(func->funcForDelegate->id, ctx);
+            regs->programPointer++;
+        }
+        else {
+            regs->programPointer++;
+            ctx->CallInterfaceMethod(func->funcForDelegate);
+        }
+    }
+    else if (func->funcType == asFUNC_SYSTEM) {
+        regs->stackPointer += CallSystemFunction(func->id, ctx);
+        regs->programPointer++;
+    }
+    else if (func->funcType == asFUNC_IMPORTED) {
+        regs->programPointer++;
+        int funcId = ctx->m_engine->importedFunctions[func->id & ~FUNC_IMPORTED]->boundFunctionId;
+        if (funcId > 0)
+            ctx->CallScriptFunction(ctx->m_engine->scriptFunctions[funcId]);
+        else {
+            ctx->m_needToCleanupArgs = true;
+            ctx->SetInternalException(TXT_UNBOUND_FUNCTION);
+        }
+    }
+    else {
+        assert(false);
+    }
+    return JITBC_EXIT;
+}
+
+static int BcAlloc(asSVMRegisters* regs, const asDWORD* bc) {
+    auto* ctx = Ctx(regs);
+    asCObjectType* objType = (asCObjectType*)asBC_PTRARG(bc);
+    int func = asBC_INTARG(bc + AS_PTR_SIZE);
+    if (objType->flags & asOBJ_SCRIPT_OBJECT) {
+        asDWORD* mem = (asDWORD*)ctx->m_engine->CallAlloc(objType);
+        ScriptObject_Construct(objType, (asCScriptObject*)mem);
+        asCScriptFunction* f = ctx->m_engine->scriptFunctions[func];
+        asDWORD** a = (asDWORD**)*(asPWORD*)(regs->stackPointer + f->GetSpaceNeededForArguments());
+        if (a) *a = mem;
+        regs->stackPointer -= AS_PTR_SIZE;
+        *(asPWORD*)regs->stackPointer = (asPWORD)mem;
+        regs->programPointer += 2 + AS_PTR_SIZE;
+        ctx->CallScriptFunction(f);
+        return JITBC_EXIT;
+    }
+    asDWORD* mem = (asDWORD*)ctx->m_engine->CallAlloc(objType);
+    if (func) {
+        regs->stackPointer -= AS_PTR_SIZE;
+        *(asPWORD*)regs->stackPointer = (asPWORD)mem;
+        regs->programPointer = const_cast<asDWORD*>(bc);
+        regs->stackPointer += CallSystemFunction(func, ctx);
+    }
+    asDWORD** a = (asDWORD**)*(asPWORD*)regs->stackPointer;
+    regs->stackPointer += AS_PTR_SIZE;
+    if (a) *a = mem;
+    regs->programPointer += 2 + AS_PTR_SIZE;
+    if (regs->doProcessSuspend) {
+        if (ctx->m_doSuspend) {
+            ctx->m_status = asEXECUTION_SUSPENDED;
+            return JITBC_EXIT;
+        }
+        if (ctx->m_status != asEXECUTION_ACTIVE) {
+            ctx->m_engine->CallFree(mem);
+            *a = 0;
+            return JITBC_EXIT;
+        }
+    }
+    return JITBC_EXIT;
+}
+
+static int BcThiscall1(asSVMRegisters* regs, const asDWORD* bc) {
+    auto* ctx = Ctx(regs);
+    int i = asBC_INTARG(bc);
+    regs->programPointer = const_cast<asDWORD*>(bc);
+    void* obj = *(void**)regs->stackPointer;
+    if (obj == 0) {
+        ctx->SetInternalException(TXT_NULL_POINTER_ACCESS);
+        regs->programPointer = NextBc(bc, 2);
+        return JITBC_EXIT;
+    }
+    regs->stackPointer += AS_PTR_SIZE;
+    int arg = *(int*)regs->stackPointer;
+    regs->stackPointer++;
+    ctx->m_callingSystemFunction = ctx->m_engine->scriptFunctions[i];
+    void* ptr = 0;
+#ifdef AS_NO_EXCEPTIONS
+    ptr = ctx->m_engine->CallObjectMethodRetPtr(obj, arg, ctx->m_callingSystemFunction);
+#else
+    try {
+        ptr = ctx->m_engine->CallObjectMethodRetPtr(obj, arg, ctx->m_callingSystemFunction);
+    }
+    catch (...) {
+        ctx->HandleAppException();
+    }
+#endif
+    ctx->m_callingSystemFunction = 0;
+    *(asPWORD*)&regs->valueRegister = (asPWORD)ptr;
+    regs->programPointer = NextBc(bc, 2);
+    if (regs->doProcessSuspend) {
+        if (ctx->m_doSuspend) {
+            ctx->m_status = asEXECUTION_SUSPENDED;
+            return JITBC_EXIT;
+        }
+        if (ctx->m_status != asEXECUTION_ACTIVE)
+            return JITBC_EXIT;
+    }
+    return JITBC_EXIT;
+}
+
 }
 
 int JitBcFallback(asSVMRegisters* regs, const asDWORD* bc) {
@@ -1285,6 +1485,14 @@ int JitBcFallback(asSVMRegisters* regs, const asDWORD* bc) {
     case asBC_DIVu64:    return BcDivu64(regs, bc);
     case asBC_MODu64:    return BcModu64(regs, bc);
     case asBC_JitEntry:  return BcJitEntry(regs, bc);
+    case asBC_CALL:      return BcCall(regs, bc);
+    case asBC_RET:       return BcRet(regs, bc);
+    case asBC_CALLSYS:   return BcCallSys(regs, bc);
+    case asBC_CALLBND:   return BcCallBnd(regs, bc);
+    case asBC_CALLINTF:  return BcCallIntf(regs, bc);
+    case asBC_CallPtr:   return BcCallPtr(regs, bc);
+    case asBC_ALLOC:     return BcAlloc(regs, bc);
+    case asBC_Thiscall1: return BcThiscall1(regs, bc);
     default:
         return JITBC_CONTINUE;
     }
