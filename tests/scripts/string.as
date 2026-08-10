@@ -4,6 +4,7 @@ int main()
 {
     string a = "hello";
     string b = "world";
+    a[1] = 97;
     g_out += a + " " + b + "\n";
 
     string s = "";

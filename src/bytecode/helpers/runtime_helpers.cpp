@@ -170,7 +170,7 @@ int BcThiscall1(asSVMRegisters* regs, const asDWORD* bc) {
         if (ctx->m_status != asEXECUTION_ACTIVE)
             return JITBC_EXIT;
     }
-    return JITBC_EXIT;
+    return JITBC_CONTINUE;
 }
 
 int BcJmpP(asSVMRegisters* regs, const asDWORD* bc) {

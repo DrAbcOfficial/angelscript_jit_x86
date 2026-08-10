@@ -212,6 +212,23 @@ bool ModuleHasJitFunctions(asIScriptModule* mod) {
     return false;
 }
 
+bool ModuleHasOpcode(asIScriptModule* mod, asEBCInstr expected) {
+    for (asUINT i = 0; i < mod->GetFunctionCount(); i++) {
+        asIScriptFunction* f = mod->GetFunctionByIndex(i);
+        asUINT len = 0;
+        asDWORD* bc = f->GetByteCode(&len);
+        if (!bc) continue;
+        asDWORD* p = bc;
+        asDWORD* end = bc + len;
+        while (p < end) {
+            asEBCInstr op = static_cast<asEBCInstr>(*p & 0xFF);
+            if (op == expected) return true;
+            p += asBCTypeSize[asBCInfo[op].type];
+        }
+    }
+    return false;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -255,9 +272,13 @@ int main(int argc, char** argv) {
 
         std::string base = scripts[s];
         base = base.substr(0, base.find('.'));
-        RunResult ri = BuildAndRun(engineInterp, ("i_" + base).c_str(), code);
-        RunResult rj = BuildAndRun(engineJit, ("j_" + base).c_str(), code);
+        std::string interpName = "i_" + base;
+        std::string jitName = "j_" + base;
+        RunResult ri = BuildAndRun(engineInterp, interpName, code);
+        RunResult rj = BuildAndRun(engineJit, jitName, code);
         CheckResults(scripts[s], ri, rj);
+        if (base == "string")
+            CHECK_TRUE(ModuleHasOpcode(engineJit->GetModule(jitName.c_str()), asBC_Thiscall1));
     }
     {
         std::string provider;
