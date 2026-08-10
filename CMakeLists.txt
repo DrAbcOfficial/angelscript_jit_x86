@@ -21,15 +21,28 @@ endif()
 
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-add_subdirectory(third_party/angelscript/sdk/angelscript/projects/cmake)
+add_subdirectory(third_party/angelscript/sdk/angelscript/projects/cmake EXCLUDE_FROM_ALL)
+get_target_property(ANGELSCRIPT_COMPILE_DEFINITIONS angelscript COMPILE_DEFINITIONS)
+list(REMOVE_ITEM ANGELSCRIPT_COMPILE_DEFINITIONS ANGELSCRIPT_EXPORT)
+set_target_properties(angelscript PROPERTIES
+    COMPILE_DEFINITIONS "${ANGELSCRIPT_COMPILE_DEFINITIONS}"
+)
 
 set(ASMJIT_STATIC TRUE CACHE BOOL "" FORCE)
 set(ASMJIT_NO_NATVIS TRUE CACHE BOOL "" FORCE)
-add_subdirectory(third_party/asmjit)
+set(ASMJIT_NO_INSTALL TRUE CACHE BOOL "" FORCE)
+add_subdirectory(third_party/asmjit EXCLUDE_FROM_ALL)
 
 if(ASJITX86_BUILD_SHARED)
     add_library(as_jit_x86 SHARED)
     target_compile_definitions(as_jit_x86 PRIVATE ASJITX86_SHARED ASJITX86_EXPORTS)
+    set_target_properties(as_jit_x86 PROPERTIES
+        CXX_VISIBILITY_PRESET hidden
+        VISIBILITY_INLINES_HIDDEN YES
+    )
+    if(UNIX AND NOT APPLE)
+        target_link_options(as_jit_x86 PRIVATE "LINKER:--exclude-libs,ALL")
+    endif()
 else()
     add_library(as_jit_x86 STATIC)
     target_compile_definitions(as_jit_x86 PUBLIC ASJITX86_STATIC)
@@ -59,3 +72,13 @@ if(ASJITX86_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
 endif()
+
+include(GNUInstallDirs)
+
+install(TARGETS as_jit_x86
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+)
+
+install(FILES include/as_jit_x86.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})

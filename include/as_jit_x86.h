@@ -7,6 +7,8 @@
 #  else
 #    define ASJITX86_API __declspec(dllimport)
 #  endif
+#elif defined(__GNUC__) && defined(ASJITX86_SHARED)
+#  define ASJITX86_API __attribute__((visibility("default")))
 #else
 #  define ASJITX86_API
 #endif
