@@ -123,7 +123,10 @@ int main() {
     asIScriptFunction* interpreterSystemFunction =
         Build(interpreter, "interpreter-system", kSystemCallScript);
     asIScriptFunction* jitSystemFunction = Build(jitEngine, "jit-system", kSystemCallScript);
-    if (!interpreterSystemFunction || !jitSystemFunction) return 1;
+    if (!interpreterSystemFunction || !jitSystemFunction ||
+        !HasOpcode(jitSystemFunction, asBC_CpyVtoR4) ||
+        !HasOpcode(jitSystemFunction, asBC_CpyRtoV4))
+        return 1;
 
     asDWORD interpreterSystemResult = 0;
     asDWORD jitSystemResult = 0;
