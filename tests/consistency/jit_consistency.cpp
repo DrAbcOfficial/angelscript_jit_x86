@@ -1,5 +1,6 @@
 #include "as_jit_x86.h"
 #include "angelscript.h"
+#include "scriptarray.h"
 #include "scriptbuilder.h"
 #include "scriptstdstring.h"
 
@@ -79,6 +80,7 @@ void RaiseError() {
 
 void RegisterAll(asIScriptEngine* engine) {
     RegisterStdString(engine);
+    RegisterScriptArray(engine, true);
 
     int r = engine->RegisterGlobalFunction("string itos(int)", asFUNCTION(Itos), asCALL_CDECL);
     if (r < 0) std::printf("itos failed: %d\n", r);
@@ -103,24 +105,28 @@ struct RunResult {
     std::string exc;
 };
 
-RunResult BuildAndRun(asIScriptEngine* engine, const std::string& name, const std::string& code) {
-    RunResult res;
-
+asIScriptModule* BuildModule(asIScriptEngine* engine, const std::string& name, const std::string& code) {
     CScriptBuilder builder;
     int r = builder.StartNewModule(engine, name.c_str());
-if (r < 0) return res;
+    if (r < 0) return nullptr;
     r = builder.AddSectionFromMemory(name.c_str(), code.c_str(), (unsigned int)code.size());
-if (r < 0) return res;
+    if (r < 0) return nullptr;
     r = builder.BuildModule();
-if (r < 0) return res;
+    if (r < 0) return nullptr;
 
-    asIScriptModule* mod = builder.GetModule();
+    return builder.GetModule();
+}
+
+RunResult RunMain(asIScriptModule* mod) {
+    RunResult res;
+    if (!mod) return res;
+
     asIScriptFunction* fn = mod->GetFunctionByName("main");
-if (!fn) return res;
+    if (!fn) return res;
 
-    asIScriptContext* ctx = engine->CreateContext();
+    asIScriptContext* ctx = mod->GetEngine()->CreateContext();
     if (!ctx) return res;
-    r = ctx->Prepare(fn);
+    int r = ctx->Prepare(fn);
     if (r < 0) {
         ctx->Release();
         return res;
@@ -141,6 +147,51 @@ if (!fn) return res;
     }
 
     return res;
+}
+
+RunResult BuildAndRun(asIScriptEngine* engine, const std::string& name, const std::string& code) {
+    return RunMain(BuildModule(engine, name, code));
+}
+
+RunResult BuildPairAndRun(asIScriptEngine* engine,
+                          const std::string& providerName,
+                          const std::string& providerCode,
+                          const std::string& consumerName,
+                          const std::string& consumerCode,
+                          bool bindImports) {
+    if (!BuildModule(engine, providerName, providerCode)) return {};
+    asIScriptModule* consumer = BuildModule(engine, consumerName, consumerCode);
+    if (!consumer) return {};
+    if (bindImports && consumer->BindAllImportedFunctions() < 0) return {};
+    return RunMain(consumer);
+}
+
+bool LoadFile(const std::string& path, std::string& code) {
+    std::ifstream in(path.c_str(), std::ios::binary);
+    if (!in) return false;
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    code = ss.str();
+    return true;
+}
+
+void CheckResults(const char* name, const RunResult& ri, const RunResult& rj) {
+    if (ri.state < 0 || rj.state < 0) {
+        std::printf("build/run setup failed for %s (interp state=%d jit state=%d)\n",
+                    name, ri.state, rj.state);
+        s_failures++;
+        return;
+    }
+
+    CHECK_EQ(ri.state, rj.state);
+    CHECK_EQ(ri.ret, rj.ret);
+    CHECK_EQ(ri.out, rj.out);
+    CHECK_EQ(ri.exc, rj.exc);
+    if (ri.out != rj.out) {
+        std::fprintf(stderr, "%s interpreter output:\n%sJIT output:\n%s",
+                     name, ri.out.c_str(), rj.out.c_str());
+    }
+    std::printf("%-24s ok\n", name);
 }
 
 bool ModuleHasJitFunctions(asIScriptModule* mod) {
@@ -189,41 +240,52 @@ int main(int argc, char** argv) {
 
     const char* scripts[] = {
         "arith.as", "branch.as", "funcs.as", "class.as", "sys.as", "except.as", "string.as",
+        "globals.as", "statements_extra.as", "types.as", "functions_advanced.as",
+        "classes_advanced.as", "operators.as", "handles.as", "shared_mixin.as",
     };
 
     bool jitActive = false;
     for (size_t s = 0; s < sizeof(scripts) / sizeof(scripts[0]); s++) {
         std::string path = std::string(scriptDir) + "/" + scripts[s];
-        std::ifstream in(path.c_str(), std::ios::binary);
-        if (!in) {
+        std::string code;
+        if (!LoadFile(path, code)) {
             std::printf("cannot open %s\n", path.c_str());
             return 1;
         }
-        std::ostringstream ss;
-        ss << in.rdbuf();
-        std::string code = ss.str();
 
         std::string base = scripts[s];
         base = base.substr(0, base.find('.'));
         RunResult ri = BuildAndRun(engineInterp, ("i_" + base).c_str(), code);
         RunResult rj = BuildAndRun(engineJit, ("j_" + base).c_str(), code);
-
-        if (ri.state < 0 || rj.state < 0) {
-            std::printf("build/run setup failed for %s (interp state=%d jit state=%d)\n",
-                        scripts[s], ri.state, rj.state);
-            s_failures++;
-            continue;
+        CheckResults(scripts[s], ri, rj);
+    }
+    {
+        std::string provider;
+        std::string consumer;
+        if (!LoadFile(std::string(scriptDir) + "/imports_provider.as", provider) ||
+            !LoadFile(std::string(scriptDir) + "/imports_consumer.as", consumer)) {
+            std::printf("cannot open import module scripts\n");
+            return 1;
         }
-
-        CHECK_EQ(ri.state, rj.state);
-        CHECK_EQ(ri.ret, rj.ret);
-        CHECK_EQ(ri.out, rj.out);
-        CHECK_EQ(ri.exc, rj.exc);
-        if (ri.out != rj.out) {
-            std::fprintf(stderr, "%s interpreter output:\n%sJIT output:\n%s",
-                         scripts[s], ri.out.c_str(), rj.out.c_str());
+        RunResult ri = BuildPairAndRun(engineInterp, "imports_provider", provider,
+                                       "imports_consumer", consumer, true);
+        RunResult rj = BuildPairAndRun(engineJit, "imports_provider", provider,
+                                       "imports_consumer", consumer, true);
+        CheckResults("imports modules", ri, rj);
+    }
+    {
+        std::string provider;
+        std::string consumer;
+        if (!LoadFile(std::string(scriptDir) + "/shared_provider.as", provider) ||
+            !LoadFile(std::string(scriptDir) + "/shared_consumer.as", consumer)) {
+            std::printf("cannot open shared module scripts\n");
+            return 1;
         }
-        std::printf("%-12s ok\n", scripts[s]);
+        RunResult ri = BuildPairAndRun(engineInterp, "shared_provider", provider,
+                                       "shared_consumer", consumer, false);
+        RunResult rj = BuildPairAndRun(engineJit, "shared_provider", provider,
+                                       "shared_consumer", consumer, false);
+        CheckResults("external shared modules", ri, rj);
     }
     {
         CScriptBuilder probe;
