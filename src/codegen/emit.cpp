@@ -17,6 +17,137 @@ struct EmitIns {
     uint32_t   size;
 };
 
+bool IsConditionalBranch(asEBCInstr op) {
+    switch (op) {
+    case asBC_JZ:
+    case asBC_JNZ:
+    case asBC_JS:
+    case asBC_JNS:
+    case asBC_JP:
+    case asBC_JNP:
+    case asBC_JLowZ:
+    case asBC_JLowNZ:
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool WritesValueRegister(asEBCInstr op) {
+    switch (op) {
+    case asBC_LdGRdR4:
+    case asBC_CMPd:
+    case asBC_CMPu:
+    case asBC_CMPf:
+    case asBC_CMPi:
+    case asBC_CMPIi:
+    case asBC_CMPIf:
+    case asBC_CMPIu:
+    case asBC_PopRPtr:
+    case asBC_CpyVtoR4:
+    case asBC_CpyVtoR8:
+    case asBC_LDG:
+    case asBC_LDV:
+    case asBC_CmpPtr:
+    case asBC_CMPi64:
+    case asBC_CMPu64:
+    case asBC_LoadThisR:
+    case asBC_LoadRObjR:
+    case asBC_LoadVObjR:
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool PreservesValueRegister(asEBCInstr op) {
+    switch (op) {
+    case asBC_PopPtr:
+    case asBC_PshGPtr:
+    case asBC_PshC4:
+    case asBC_PshV4:
+    case asBC_PSF:
+    case asBC_SwapPtr:
+    case asBC_NOT:
+    case asBC_PshG4:
+    case asBC_NEGi:
+    case asBC_NEGf:
+    case asBC_NEGd:
+    case asBC_IncVi:
+    case asBC_DecVi:
+    case asBC_BNOT:
+    case asBC_BAND:
+    case asBC_BOR:
+    case asBC_BXOR:
+    case asBC_BSLL:
+    case asBC_BSRL:
+    case asBC_BSRA:
+    case asBC_PshC8:
+    case asBC_PshVPtr:
+    case asBC_SetV4:
+    case asBC_SetV8:
+    case asBC_SetV1:
+    case asBC_SetV2:
+    case asBC_CpyVtoV4:
+    case asBC_CpyVtoV8:
+    case asBC_CpyVtoG4:
+    case asBC_CpyGtoV4:
+    case asBC_iTOf:
+    case asBC_fTOi:
+    case asBC_uTOf:
+    case asBC_fTOu:
+    case asBC_sbTOi:
+    case asBC_swTOi:
+    case asBC_ubTOi:
+    case asBC_uwTOi:
+    case asBC_dTOi:
+    case asBC_dTOu:
+    case asBC_dTOf:
+    case asBC_iTOd:
+    case asBC_uTOd:
+    case asBC_fTOd:
+    case asBC_ADDi:
+    case asBC_SUBi:
+    case asBC_MULi:
+    case asBC_ADDf:
+    case asBC_SUBf:
+    case asBC_MULf:
+    case asBC_ADDd:
+    case asBC_SUBd:
+    case asBC_MULd:
+    case asBC_ADDIi:
+    case asBC_SUBIi:
+    case asBC_MULIi:
+    case asBC_ADDIf:
+    case asBC_SUBIf:
+    case asBC_MULIf:
+    case asBC_SetG4:
+    case asBC_iTOb:
+    case asBC_iTOw:
+    case asBC_i64TOi:
+    case asBC_uTOi64:
+    case asBC_iTOi64:
+    case asBC_NEGi64:
+    case asBC_BNOT64:
+    case asBC_ADDi64:
+    case asBC_SUBi64:
+    case asBC_MULi64:
+    case asBC_BAND64:
+    case asBC_BOR64:
+    case asBC_BXOR64:
+    case asBC_PshV8:
+    case asBC_JitEntry:
+    case asBC_PshNull:
+    case asBC_ClrVPtr:
+    case asBC_OBJTYPE:
+    case asBC_TYPEID:
+    case asBC_FuncPtr:
+        return true;
+    default:
+        return false;
+    }
+}
+
 constexpr bool kInlinePshC4   = true;
 constexpr bool kInlinePshV4   = true;
 constexpr bool kInlinePsf     = true;
@@ -30,6 +161,7 @@ constexpr bool kInlineNot6b   = true;
 constexpr bool kInlineIncDecV = true;
 constexpr bool kInlineImmInt  = true;
 constexpr bool kInlineCmp6c   = true;
+constexpr bool kFuseCmpBranch = true;
 
 }
 
@@ -86,6 +218,63 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
         }
     }
 
+    auto valueRegisterDeadFrom = [&](size_t start) {
+        std::vector<uint8_t> visited(ins.size(), 0);
+        size_t current = start;
+        while (current < ins.size()) {
+            if (visited[current]) return false;
+            visited[current] = 1;
+            const EmitIns& currentIns = ins[current];
+            if (WritesValueRegister(currentIns.op)) return true;
+            if (currentIns.op == asBC_JMP) {
+                int64_t target = int64_t(currentIns.off) + 2 + asBC_INTARG(bc + currentIns.off);
+                if (target < 0 || target >= int64_t(bcLen)) return false;
+                int targetIndex = indexOfOffset[static_cast<size_t>(target)];
+                if (targetIndex < 0) return false;
+                current = static_cast<size_t>(targetIndex);
+                continue;
+            }
+            if (!PreservesValueRegister(currentIns.op)) return false;
+            current++;
+        }
+        return false;
+    };
+
+    std::vector<uint8_t> fusedCmpBranch(ins.size(), 0);
+    std::vector<int8_t> fusedFallValue(ins.size(), 2);
+    if (kFuseCmpBranch && kInlineCmp6c) {
+        for (size_t i = 0; i + 2 < ins.size(); i++) {
+            if (ins[i].op != asBC_CMPi || !IsConditionalBranch(ins[i + 1].op) || needsLabel[i + 1])
+                continue;
+            const EmitIns& branch = ins[i + 1];
+            int64_t target = int64_t(branch.off) + 2 + asBC_INTARG(bc + branch.off);
+            if (target < 0 || target >= int64_t(bcLen)) return asERROR;
+            int targetIndex = indexOfOffset[static_cast<size_t>(target)];
+            if (targetIndex < 0) return asERROR;
+            bool fallDead = valueRegisterDeadFrom(i + 2);
+            bool takenDead = valueRegisterDeadFrom(static_cast<size_t>(targetIndex));
+            int fallValue = 2;
+            switch (branch.op) {
+            case asBC_JNZ:
+            case asBC_JLowNZ:
+                fallValue = 0;
+                break;
+            case asBC_JNS:
+                fallValue = -1;
+                break;
+            case asBC_JNP:
+                fallValue = 1;
+                break;
+            default:
+                break;
+            }
+            if (takenDead && (fallDead || fallValue != 2)) {
+                fusedCmpBranch[i] = 1;
+                if (!fallDead) fusedFallValue[i] = static_cast<int8_t>(fallValue);
+            }
+        }
+    }
+
     CodeHolder code;
     Error err = code.init(runtime.environment(), runtime.cpu_features());
     if (err != kErrorOk) return asERROR;
@@ -125,6 +314,7 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
     }
 
     for (size_t i = 0; i < ins.size(); i++) {
+        if (i > 0 && fusedCmpBranch[i - 1]) continue;
         if (needsLabel[i]) cc.bind(labels[i]);
         const EmitIns& in = ins[i];
         const asDWORD* ip = bc + in.off;
@@ -390,13 +580,37 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
                 loadVar(a0, x);
                 loadVar(a1, y);
                 cc.cmp(x, y);
-                cc.set(x86::CondCode::kSignedGT, x);
-                cc.set(x86::CondCode::kSignedLT, y);
-                cc.movzx(x, x.r8());
-                cc.movzx(y, y.r8());
-                cc.sub(x, y);
-                cc.mov(x86::dword_ptr(regs, offsetof(asSVMRegisters, valueRegister)), x);
-                storeProgramPointer(ip + in.size);
+                if (fusedCmpBranch[i]) {
+                    const EmitIns& branch = ins[i + 1];
+                    const asDWORD* branchIp = bc + branch.off;
+                    int64_t target = int64_t(branch.off) + 2 + asBC_INTARG(branchIp);
+                    int targetIndex = indexOfOffset[static_cast<size_t>(target)];
+                    storeProgramPointer(ip + in.size);
+                    storeProgramPointer(bc + target);
+                    switch (branch.op) {
+                    case asBC_JZ:     cc.jz(labels[static_cast<size_t>(targetIndex)]); break;
+                    case asBC_JNZ:    cc.jnz(labels[static_cast<size_t>(targetIndex)]); break;
+                    case asBC_JS:     cc.js(labels[static_cast<size_t>(targetIndex)]); break;
+                    case asBC_JNS:    cc.jns(labels[static_cast<size_t>(targetIndex)]); break;
+                    case asBC_JP:     cc.jg(labels[static_cast<size_t>(targetIndex)]); break;
+                    case asBC_JNP:    cc.jle(labels[static_cast<size_t>(targetIndex)]); break;
+                    case asBC_JLowZ:  cc.jz(labels[static_cast<size_t>(targetIndex)]); break;
+                    case asBC_JLowNZ: cc.jnz(labels[static_cast<size_t>(targetIndex)]); break;
+                    default: return asERROR;
+                    }
+                    if (fusedFallValue[i] != 2)
+                        cc.mov(x86::dword_ptr(regs, offsetof(asSVMRegisters, valueRegister)),
+                               fusedFallValue[i]);
+                    storeProgramPointer(branchIp + branch.size);
+                } else {
+                    cc.set(x86::CondCode::kSignedGT, x);
+                    cc.set(x86::CondCode::kSignedLT, y);
+                    cc.movzx(x, x.r8());
+                    cc.movzx(y, y.r8());
+                    cc.sub(x, y);
+                    cc.mov(x86::dword_ptr(regs, offsetof(asSVMRegisters, valueRegister)), x);
+                    storeProgramPointer(ip + in.size);
+                }
             } else if (!emitHelperCall()) return asERROR;
             break;
         }
