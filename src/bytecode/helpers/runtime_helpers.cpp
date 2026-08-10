@@ -73,6 +73,7 @@ int BcCallBnd(asSVMRegisters* regs, const asDWORD* bc) {
     else if (func->funcType == asFUNC_SYSTEM) {
         regs->stackPointer += CallSystemFunction(func->id, ctx);
         regs->programPointer += 2;
+        return ctx->m_status == asEXECUTION_ACTIVE ? JITBC_CONTINUE : JITBC_EXIT;
     }
     else {
         assert(func->funcType == asFUNC_DELEGATE);

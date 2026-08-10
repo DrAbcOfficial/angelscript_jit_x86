@@ -21,6 +21,11 @@ constexpr const char* kFunctionCallScript =
     "int value = 0; int i = 0; int limit = 1000000; "
     "while (i < limit) { value = fn(value); i++; } return value; }";
 
+constexpr const char* kImportedCallScript =
+    "import int hostAdd(int) from 'host'; int main() { "
+    "int value = 0; int i = 0; int limit = 1000000; "
+    "while (i < limit) { value = hostAdd(value); i++; } return value; }";
+
 int AddOne(int value) {
     return value + 1;
 }
@@ -31,6 +36,15 @@ asIScriptFunction* Build(asIScriptEngine* engine, const char* name, const char* 
     if (module->AddScriptSection("benchmark", script) < 0) return nullptr;
     if (module->Build() < 0) return nullptr;
     return module->GetFunctionByName("main");
+}
+
+asIScriptFunction* BuildImported(asIScriptEngine* engine, const char* name) {
+    asIScriptFunction* function = Build(engine, name, kImportedCallScript);
+    if (!function) return nullptr;
+    asIScriptModule* module = function->GetModule();
+    asIScriptFunction* imported = engine->GetGlobalFunctionByDecl("int addOne(int)");
+    if (!module || !imported || module->BindImportedFunction(0, imported) < 0) return nullptr;
+    return function;
 }
 
 double Run(asIScriptEngine* engine, asIScriptFunction* function, asDWORD* result) {
@@ -108,6 +122,18 @@ int main() {
     std::printf("function-call-loop(1e6): interpreter=%.3f ms jit=%.3f ms speedup=%.2fx\n",
                 interpreterFunctionMs, jitFunctionMs, functionSpeedup);
 
+    asIScriptFunction* interpreterImportedCall = BuildImported(interpreter, "interpreter-imported");
+    asIScriptFunction* jitImportedCall = BuildImported(jitEngine, "jit-imported");
+    if (!interpreterImportedCall || !jitImportedCall) return 1;
+
+    asDWORD interpreterImportedResult = 0;
+    asDWORD jitImportedResult = 0;
+    double interpreterImportedMs = Run(interpreter, interpreterImportedCall, &interpreterImportedResult);
+    double jitImportedMs = Run(jitEngine, jitImportedCall, &jitImportedResult);
+    double importedSpeedup = interpreterImportedMs / jitImportedMs;
+    std::printf("imported-call-loop(1e6): interpreter=%.3f ms jit=%.3f ms speedup=%.2fx\n",
+                interpreterImportedMs, jitImportedMs, importedSpeedup);
+
     jitEngine->Release();
     AsJitDestroyEngine(jit);
     interpreter->Release();
@@ -115,8 +141,10 @@ int main() {
     return interpreterMs > 0.0 && jitMs > 0.0 &&
                    interpreterSystemMs > 0.0 && jitSystemMs > 0.0 &&
                    interpreterFunctionMs > 0.0 && jitFunctionMs > 0.0 &&
+                   interpreterImportedMs > 0.0 && jitImportedMs > 0.0 &&
                    interpreterResult == jitResult && interpreterSystemResult == jitSystemResult &&
                    interpreterFunctionResult == jitFunctionResult &&
+                   interpreterImportedResult == jitImportedResult &&
                    speedup >= 1.0
         ? 0
         : 1;

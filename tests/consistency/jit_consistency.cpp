@@ -166,6 +166,18 @@ RunResult BuildPairAndRun(asIScriptEngine* engine,
     return RunMain(consumer);
 }
 
+RunResult BuildImportedSystemAndRun(asIScriptEngine* engine,
+                                    const std::string& name,
+                                    const std::string& code) {
+    asIScriptModule* module = BuildModule(engine, name, code);
+    if (!module) return {};
+    asIScriptFunction* function = engine->GetGlobalFunctionByDecl("int add2(int, int)");
+    int index = module->GetImportedFunctionIndexByDecl("int hostAdd(int, int)");
+    if (!function || index < 0 || module->BindImportedFunction(static_cast<asUINT>(index), function) < 0)
+        return {};
+    return RunMain(module);
+}
+
 bool LoadFile(const std::string& path, std::string& code) {
     std::ifstream in(path.c_str(), std::ios::binary);
     if (!in) return false;
@@ -293,6 +305,15 @@ int main(int argc, char** argv) {
         RunResult rj = BuildPairAndRun(engineJit, "imports_provider", provider,
                                        "imports_consumer", consumer, true);
         CheckResults("imports modules", ri, rj);
+    }
+    {
+        const std::string code =
+            "string g_out; import int hostAdd(int, int) from 'host'; "
+            "int main() { int total = hostAdd(4, 7); g_out += itos(total) + '\\n'; return total; }";
+        RunResult ri = BuildImportedSystemAndRun(engineInterp, "i_imported_system", code);
+        RunResult rj = BuildImportedSystemAndRun(engineJit, "j_imported_system", code);
+        CheckResults("imported system function", ri, rj);
+        CHECK_TRUE(ModuleHasOpcode(engineJit->GetModule("j_imported_system"), asBC_CALLBND));
     }
     {
         std::string provider;
