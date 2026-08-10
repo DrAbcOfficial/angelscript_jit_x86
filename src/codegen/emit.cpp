@@ -151,6 +151,7 @@ bool PreservesValueRegister(asEBCInstr op) {
 constexpr bool kInlinePshC4   = true;
 constexpr bool kInlinePshV4   = true;
 constexpr bool kInlinePsf     = true;
+constexpr bool kInlineLocalV4 = true;
 constexpr bool kInlineAdd6b   = true;
 constexpr bool kInlineSub6b   = true;
 constexpr bool kInlineMul6b   = true;
@@ -428,6 +429,26 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
                 cc.lea(v, x86::dword_ptr(fp, -offset * 4));
                 cc.mov(x86::dword_ptr(sp), v);
                 storeSp(sp);
+                storeProgramPointer(ip + in.size);
+            } else if (!emitHelperCall()) return asERROR;
+            break;
+        }
+        case asBC_SetV4: {
+            if (kInlineLocalV4) {
+                int offset = asBC_SWORDARG0(ip);
+                cc.mov(x86::dword_ptr(fp, -offset * 4),
+                       Imm(int64_t((int32_t)asBC_DWORDARG(ip))));
+                storeProgramPointer(ip + in.size);
+            } else if (!emitHelperCall()) return asERROR;
+            break;
+        }
+        case asBC_CpyVtoV4: {
+            if (kInlineLocalV4) {
+                int destination = asBC_SWORDARG0(ip);
+                int source = asBC_SWORDARG1(ip);
+                x86::Gp value = cc.new_gp32("value");
+                loadVar(source, value);
+                storeVar(destination, value);
                 storeProgramPointer(ip + in.size);
             } else if (!emitHelperCall()) return asERROR;
             break;

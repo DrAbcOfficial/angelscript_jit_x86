@@ -26,6 +26,11 @@ constexpr const char* kImportedCallScript =
     "int value = 0; int i = 0; int limit = 1000000; "
     "while (i < limit) { value = hostAdd(value); i++; } return value; }";
 
+constexpr const char* kLocalCopyScript =
+    "int main() { int source = 1; int destination = 0; int i = 0; int limit = 10000000; "
+    "while (i < limit) { destination = source; source = destination + 1; i++; } "
+    "return destination; }";
+
 int AddOne(int value) {
     return value + 1;
 }
@@ -65,6 +70,20 @@ double Run(asIScriptEngine* engine, asIScriptFunction* function, asDWORD* result
         best = std::min(best, elapsed);
     }
     return best;
+}
+
+bool HasOpcode(asIScriptFunction* function, asEBCInstr expected) {
+    asUINT length = 0;
+    asDWORD* bytecode = function->GetByteCode(&length);
+    if (!bytecode) return false;
+    asDWORD* current = bytecode;
+    asDWORD* end = bytecode + length;
+    while (current < end) {
+        asEBCInstr opcode = static_cast<asEBCInstr>(*current & 0xFF);
+        if (opcode == expected) return true;
+        current += asBCTypeSize[asBCInfo[opcode].type];
+    }
+    return false;
 }
 
 }
@@ -134,6 +153,20 @@ int main() {
     std::printf("imported-call-loop(1e6): interpreter=%.3f ms jit=%.3f ms speedup=%.2fx\n",
                 interpreterImportedMs, jitImportedMs, importedSpeedup);
 
+    asIScriptFunction* interpreterLocalCopy = Build(interpreter, "interpreter-local-copy", kLocalCopyScript);
+    asIScriptFunction* jitLocalCopy = Build(jitEngine, "jit-local-copy", kLocalCopyScript);
+    if (!interpreterLocalCopy || !jitLocalCopy ||
+        !HasOpcode(jitLocalCopy, asBC_SetV4) || !HasOpcode(jitLocalCopy, asBC_CpyVtoV4))
+        return 1;
+
+    asDWORD interpreterLocalCopyResult = 0;
+    asDWORD jitLocalCopyResult = 0;
+    double interpreterLocalCopyMs = Run(interpreter, interpreterLocalCopy, &interpreterLocalCopyResult);
+    double jitLocalCopyMs = Run(jitEngine, jitLocalCopy, &jitLocalCopyResult);
+    double localCopySpeedup = interpreterLocalCopyMs / jitLocalCopyMs;
+    std::printf("local-copy-loop(1e7): interpreter=%.3f ms jit=%.3f ms speedup=%.2fx\n",
+                interpreterLocalCopyMs, jitLocalCopyMs, localCopySpeedup);
+
     jitEngine->Release();
     AsJitDestroyEngine(jit);
     interpreter->Release();
@@ -142,9 +175,11 @@ int main() {
                    interpreterSystemMs > 0.0 && jitSystemMs > 0.0 &&
                    interpreterFunctionMs > 0.0 && jitFunctionMs > 0.0 &&
                    interpreterImportedMs > 0.0 && jitImportedMs > 0.0 &&
+                   interpreterLocalCopyMs > 0.0 && jitLocalCopyMs > 0.0 &&
                    interpreterResult == jitResult && interpreterSystemResult == jitSystemResult &&
                    interpreterFunctionResult == jitFunctionResult &&
                    interpreterImportedResult == jitImportedResult &&
+                   interpreterLocalCopyResult == jitLocalCopyResult &&
                    speedup >= 1.0
         ? 0
         : 1;
