@@ -14,6 +14,9 @@ int main()
     int16 i16 = 160;
     int32 i32 = 3200;
     int64 i64 = 64000;
+    int64 carry = 4294967295;
+    int64 increment64 = 2;
+    carry = carry + increment64;
     uint8 u8 = 8;
     uint16 u16 = 160;
     uint32 u32 = 3200;
@@ -38,6 +41,7 @@ beta""";
 
     g_out += itos(int(i8) + int(i16) + i32 + int(i64)) + "\n";
     g_out += itos(int(u8) + int(u16) + int(u32) + int(u64)) + "\n";
+    g_out += dtos(double(carry)) + "\n";
     g_out += itos(int(literals)) + "\n";
     g_out += ftos(real32) + "\n";
     g_out += dtos(real64) + "\n";

@@ -31,6 +31,11 @@ constexpr const char* kLocalCopyScript =
     "while (i < limit) { destination = source; source = destination + 1; i++; } "
     "return destination; }";
 
+constexpr const char* kLocalCopy64Script =
+    "int main() { int64 source = 1; int64 destination = 0; int i = 0; int limit = 10000000; "
+    "while (i < limit) { destination = source; source = destination + 1; i++; } "
+    "return int(destination); }";
+
 int AddOne(int value) {
     return value + 1;
 }
@@ -167,6 +172,24 @@ int main() {
     std::printf("local-copy-loop(1e7): interpreter=%.3f ms jit=%.3f ms speedup=%.2fx\n",
                 interpreterLocalCopyMs, jitLocalCopyMs, localCopySpeedup);
 
+    asIScriptFunction* interpreterLocalCopy64 =
+        Build(interpreter, "interpreter-local-copy64", kLocalCopy64Script);
+    asIScriptFunction* jitLocalCopy64 = Build(jitEngine, "jit-local-copy64", kLocalCopy64Script);
+    if (!interpreterLocalCopy64 || !jitLocalCopy64 ||
+        !HasOpcode(jitLocalCopy64, asBC_SetV8) ||
+        !HasOpcode(jitLocalCopy64, asBC_CpyVtoV8) ||
+        !HasOpcode(jitLocalCopy64, asBC_ADDi64))
+        return 1;
+
+    asDWORD interpreterLocalCopy64Result = 0;
+    asDWORD jitLocalCopy64Result = 0;
+    double interpreterLocalCopy64Ms =
+        Run(interpreter, interpreterLocalCopy64, &interpreterLocalCopy64Result);
+    double jitLocalCopy64Ms = Run(jitEngine, jitLocalCopy64, &jitLocalCopy64Result);
+    double localCopy64Speedup = interpreterLocalCopy64Ms / jitLocalCopy64Ms;
+    std::printf("local-copy64-loop(1e7): interpreter=%.3f ms jit=%.3f ms speedup=%.2fx\n",
+                interpreterLocalCopy64Ms, jitLocalCopy64Ms, localCopy64Speedup);
+
     jitEngine->Release();
     AsJitDestroyEngine(jit);
     interpreter->Release();
@@ -176,11 +199,13 @@ int main() {
                    interpreterFunctionMs > 0.0 && jitFunctionMs > 0.0 &&
                    interpreterImportedMs > 0.0 && jitImportedMs > 0.0 &&
                    interpreterLocalCopyMs > 0.0 && jitLocalCopyMs > 0.0 &&
+                   interpreterLocalCopy64Ms > 0.0 && jitLocalCopy64Ms > 0.0 &&
                    interpreterResult == jitResult && interpreterSystemResult == jitSystemResult &&
                    interpreterFunctionResult == jitFunctionResult &&
                    interpreterImportedResult == jitImportedResult &&
                    interpreterLocalCopyResult == jitLocalCopyResult &&
-                   speedup >= 1.0
+                   interpreterLocalCopy64Result == jitLocalCopy64Result &&
+                   speedup >= 1.0 && localCopy64Speedup >= 1.0
         ? 0
         : 1;
 }

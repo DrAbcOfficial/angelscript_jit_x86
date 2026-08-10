@@ -152,6 +152,8 @@ constexpr bool kInlinePshC4   = true;
 constexpr bool kInlinePshV4   = true;
 constexpr bool kInlinePsf     = true;
 constexpr bool kInlineLocalV4 = true;
+constexpr bool kInlineLocalV8 = true;
+constexpr bool kInlineAdd64   = true;
 constexpr bool kInlineAdd6b   = true;
 constexpr bool kInlineSub6b   = true;
 constexpr bool kInlineMul6b   = true;
@@ -449,6 +451,53 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
                 x86::Gp value = cc.new_gp32("value");
                 loadVar(source, value);
                 storeVar(destination, value);
+                storeProgramPointer(ip + in.size);
+            } else if (!emitHelperCall()) return asERROR;
+            break;
+        }
+        case asBC_SetV8: {
+            if (kInlineLocalV8) {
+                int offset = asBC_SWORDARG0(ip);
+                asQWORD value = asBC_QWORDARG(ip);
+                cc.mov(x86::dword_ptr(fp, -offset * 4),
+                       Imm(int64_t((int32_t)asDWORD(value))));
+                cc.mov(x86::dword_ptr(fp, -offset * 4 + 4),
+                       Imm(int64_t((int32_t)asDWORD(value >> 32))));
+                storeProgramPointer(ip + in.size);
+            } else if (!emitHelperCall()) return asERROR;
+            break;
+        }
+        case asBC_CpyVtoV8: {
+            if (kInlineLocalV8) {
+                int destination = asBC_SWORDARG0(ip);
+                int source = asBC_SWORDARG1(ip);
+                x86::Gp low = cc.new_gp32("low");
+                x86::Gp high = cc.new_gp32("high");
+                cc.mov(low, x86::dword_ptr(fp, -source * 4));
+                cc.mov(high, x86::dword_ptr(fp, -source * 4 + 4));
+                cc.mov(x86::dword_ptr(fp, -destination * 4), low);
+                cc.mov(x86::dword_ptr(fp, -destination * 4 + 4), high);
+                storeProgramPointer(ip + in.size);
+            } else if (!emitHelperCall()) return asERROR;
+            break;
+        }
+        case asBC_ADDi64: {
+            if (kInlineAdd64) {
+                int destination = asBC_SWORDARG0(ip);
+                int left = asBC_SWORDARG1(ip);
+                int right = asBC_SWORDARG2(ip);
+                x86::Gp low = cc.new_gp32("low");
+                x86::Gp high = cc.new_gp32("high");
+                x86::Gp rightLow = cc.new_gp32("rightLow");
+                x86::Gp rightHigh = cc.new_gp32("rightHigh");
+                cc.mov(low, x86::dword_ptr(fp, -left * 4));
+                cc.mov(high, x86::dword_ptr(fp, -left * 4 + 4));
+                cc.mov(rightLow, x86::dword_ptr(fp, -right * 4));
+                cc.mov(rightHigh, x86::dword_ptr(fp, -right * 4 + 4));
+                cc.add(low, rightLow);
+                cc.adc(high, rightHigh);
+                cc.mov(x86::dword_ptr(fp, -destination * 4), low);
+                cc.mov(x86::dword_ptr(fp, -destination * 4 + 4), high);
                 storeProgramPointer(ip + in.size);
             } else if (!emitHelperCall()) return asERROR;
             break;
