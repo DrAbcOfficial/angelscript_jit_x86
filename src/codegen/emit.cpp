@@ -65,6 +65,13 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
     x86::Gp regs = cc.new_gp32("regs");
     fnNode->set_arg(0, regs);
 
+    const uint32_t ppOff = offsetof(asSVMRegisters, programPointer);
+    const uint32_t fpOff = offsetof(asSVMRegisters, stackFramePointer);
+    const uint32_t spOff = offsetof(asSVMRegisters, stackPointer);
+
+    x86::Gp fp = cc.new_gp32("fp");
+    cc.mov(fp, x86::dword_ptr(regs, fpOff));
+
     std::vector<Label> labels;
     labels.reserve(ins.size());
     for (size_t i = 0; i < ins.size(); i++) labels.push_back(cc.new_label());
@@ -87,18 +94,11 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
         const EmitIns& in = ins[i];
         const asDWORD* ip = bc + in.off;
 
-        const uint32_t ppOff = offsetof(asSVMRegisters, programPointer);
-        const uint32_t fpOff = offsetof(asSVMRegisters, stackFramePointer);
-        const uint32_t spOff = offsetof(asSVMRegisters, stackPointer);
-
         auto loadVar = [&](int offset, const x86::Gp& dst) {
-            cc.mov(dst, x86::dword_ptr(regs, fpOff));
-            cc.mov(dst, x86::dword_ptr(dst, -offset * 4));
+            cc.mov(dst, x86::dword_ptr(fp, -offset * 4));
         };
         auto storeVar = [&](int offset, const x86::Gp& src) {
-            x86::Gp tmp = cc.new_gp32("fp");
-            cc.mov(tmp, x86::dword_ptr(regs, fpOff));
-            cc.mov(x86::dword_ptr(tmp, -offset * 4), src);
+            cc.mov(x86::dword_ptr(fp, -offset * 4), src);
         };
         auto loadSp = [&](const x86::Gp& dst) {
             cc.mov(dst, x86::dword_ptr(regs, spOff));
@@ -195,8 +195,7 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
                 x86::Gp v = cc.new_gp32("v");
                 loadSp(sp);
                 cc.sub(sp, 4);
-                cc.mov(v, x86::dword_ptr(regs, fpOff));
-                cc.lea(v, x86::dword_ptr(v, -offset * 4));
+                cc.lea(v, x86::dword_ptr(fp, -offset * 4));
                 cc.mov(x86::dword_ptr(sp), v);
                 storeSp(sp);
                 storeProgramPointer(ip + in.size);
@@ -305,8 +304,7 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
             if (kInlineNot6b) {
                 int a0 = asBC_SWORDARG0(ip);
                 x86::Gp x = cc.new_gp32("x");
-                cc.mov(x, x86::dword_ptr(regs, fpOff));
-                cc.movzx(x, x86::byte_ptr(x, -a0 * 4));
+                cc.movzx(x, x86::byte_ptr(fp, -a0 * 4));
                 cc.test(x, x);
                 cc.set(x86::CondCode::kEqual, x);
                 cc.movzx(x, x.r8());
