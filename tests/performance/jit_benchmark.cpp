@@ -16,6 +16,11 @@ constexpr const char* kSystemCallScript =
     "int main() { int value = 0; int i = 0; int limit = 1000000; "
     "while (i < limit) { value = addOne(value); i++; } return value; }";
 
+constexpr const char* kFunctionCallScript =
+    "funcdef int Unary(int); int main() { Unary@ fn = @addOne; "
+    "int value = 0; int i = 0; int limit = 1000000; "
+    "while (i < limit) { value = fn(value); i++; } return value; }";
+
 int AddOne(int value) {
     return value + 1;
 }
@@ -90,13 +95,28 @@ int main() {
     std::printf("system-call-loop(1e6): interpreter=%.3f ms jit=%.3f ms speedup=%.2fx\n",
                 interpreterSystemMs, jitSystemMs, systemSpeedup);
 
+    asIScriptFunction* interpreterFunctionCall =
+        Build(interpreter, "interpreter-function", kFunctionCallScript);
+    asIScriptFunction* jitFunctionCall = Build(jitEngine, "jit-function", kFunctionCallScript);
+    if (!interpreterFunctionCall || !jitFunctionCall) return 1;
+
+    asDWORD interpreterFunctionResult = 0;
+    asDWORD jitFunctionResult = 0;
+    double interpreterFunctionMs = Run(interpreter, interpreterFunctionCall, &interpreterFunctionResult);
+    double jitFunctionMs = Run(jitEngine, jitFunctionCall, &jitFunctionResult);
+    double functionSpeedup = interpreterFunctionMs / jitFunctionMs;
+    std::printf("function-call-loop(1e6): interpreter=%.3f ms jit=%.3f ms speedup=%.2fx\n",
+                interpreterFunctionMs, jitFunctionMs, functionSpeedup);
+
     jitEngine->Release();
     AsJitDestroyEngine(jit);
     interpreter->Release();
 
     return interpreterMs > 0.0 && jitMs > 0.0 &&
                    interpreterSystemMs > 0.0 && jitSystemMs > 0.0 &&
+                   interpreterFunctionMs > 0.0 && jitFunctionMs > 0.0 &&
                    interpreterResult == jitResult && interpreterSystemResult == jitSystemResult &&
+                   interpreterFunctionResult == jitFunctionResult &&
                    speedup >= 1.0
         ? 0
         : 1;

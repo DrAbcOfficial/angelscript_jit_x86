@@ -91,6 +91,7 @@ int BcCallIntf(asSVMRegisters* regs, const asDWORD* bc) {
 int BcCallPtr(asSVMRegisters* regs, const asDWORD* bc) {
     auto* ctx = Ctx(regs);
     asCScriptFunction* func = *(asCScriptFunction**)(regs->stackFramePointer - asBC_SWORDARG0(bc));
+    bool systemCall = false;
     regs->programPointer = const_cast<asDWORD*>(bc);
     if (func == 0) {
         regs->programPointer++;
@@ -108,6 +109,7 @@ int BcCallPtr(asSVMRegisters* regs, const asDWORD* bc) {
         if (func->funcForDelegate->funcType == asFUNC_SYSTEM) {
             regs->stackPointer += CallSystemFunction(func->funcForDelegate->id, ctx);
             regs->programPointer++;
+            systemCall = true;
         }
         else {
             regs->programPointer++;
@@ -117,6 +119,7 @@ int BcCallPtr(asSVMRegisters* regs, const asDWORD* bc) {
     else if (func->funcType == asFUNC_SYSTEM) {
         regs->stackPointer += CallSystemFunction(func->id, ctx);
         regs->programPointer++;
+        systemCall = true;
     }
     else if (func->funcType == asFUNC_IMPORTED) {
         regs->programPointer++;
@@ -131,7 +134,7 @@ int BcCallPtr(asSVMRegisters* regs, const asDWORD* bc) {
     else {
         assert(false);
     }
-    return JITBC_EXIT;
+    return systemCall && ctx->m_status == asEXECUTION_ACTIVE ? JITBC_CONTINUE : JITBC_EXIT;
 }
 
 int BcThiscall1(asSVMRegisters* regs, const asDWORD* bc) {

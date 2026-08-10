@@ -95,10 +95,12 @@ int main()
     g_out += itos(referenceValue + box.value) + "\n";
 
     Binary@ direct = @add;
+    Binary@ system = @add2;
     Binary@ lambda = function(int left, int right) { return left - right; };
     Target target(7);
     Binary@ delegate = Binary(target.addBias);
     g_out += itos(apply(8, 3, direct)) + "\n";
+    g_out += itos(apply(8, 3, system)) + "\n";
     g_out += itos(apply(8, 3, lambda)) + "\n";
     g_out += itos(apply(8, 3, delegate)) + "\n";
     g_out += direct !is null ? "handle\n" : "null\n";
