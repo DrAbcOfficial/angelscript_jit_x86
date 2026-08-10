@@ -49,7 +49,7 @@ int BcAlloc(asSVMRegisters* regs, const asDWORD* bc) {
             return JITBC_EXIT;
         }
     }
-    return JITBC_EXIT;
+    return JITBC_CONTINUE;
 }
 
 int BcFree(asSVMRegisters* regs, const asDWORD* bc) {
