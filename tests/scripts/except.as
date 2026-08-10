@@ -40,6 +40,17 @@ int main()
         g_out += itos(v) + "\n";
     }
 
+    try
+    {
+        int zero = 0;
+        int value = 42 / zero;
+        g_out += itos(value) + "\n";
+    }
+    catch
+    {
+        g_out += "caught-div0\n";
+    }
+
     g_out += "after\n";
     return 0;
 }

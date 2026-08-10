@@ -4,7 +4,6 @@
 #include "scriptstdstring.h"
 
 #include <cstdio>
-#include <cstring>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -208,7 +207,6 @@ int main(int argc, char** argv) {
         base = base.substr(0, base.find('.'));
         RunResult ri = BuildAndRun(engineInterp, ("i_" + base).c_str(), code);
         RunResult rj = BuildAndRun(engineJit, ("j_" + base).c_str(), code);
-        if (strcmp(scripts[s], "class.as") == 0)
 
         if (ri.state < 0 || rj.state < 0) {
             std::printf("build/run setup failed for %s (interp state=%d jit state=%d)\n",
@@ -221,6 +219,10 @@ int main(int argc, char** argv) {
         CHECK_EQ(ri.ret, rj.ret);
         CHECK_EQ(ri.out, rj.out);
         CHECK_EQ(ri.exc, rj.exc);
+        if (ri.out != rj.out) {
+            std::fprintf(stderr, "%s interpreter output:\n%sJIT output:\n%s",
+                         scripts[s], ri.out.c_str(), rj.out.c_str());
+        }
         std::printf("%-12s ok\n", scripts[s]);
     }
     {
