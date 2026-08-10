@@ -27,6 +27,8 @@ constexpr bool kInlineDiv6b   = true;
 constexpr bool kInlineBits6b  = true;
 constexpr bool kInlineNeg6b   = true;
 constexpr bool kInlineNot6b   = true;
+constexpr bool kInlineIncDecV = true;
+constexpr bool kInlineImmInt  = true;
 constexpr bool kInlineCmp6c   = true;
 
 }
@@ -343,6 +345,37 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
                 cc.test(x, x);
                 cc.set(x86::CondCode::kEqual, x);
                 cc.movzx(x, x.r8());
+                storeVar(a0, x);
+                storeProgramPointer(ip + in.size);
+            } else if (!emitHelperCall()) return asERROR;
+            break;
+        }
+        case asBC_IncVi:
+        case asBC_DecVi: {
+            if (kInlineIncDecV) {
+                int a0 = asBC_SWORDARG0(ip);
+                if (in.op == asBC_IncVi)
+                    cc.inc(x86::dword_ptr(fp, -a0 * 4));
+                else
+                    cc.dec(x86::dword_ptr(fp, -a0 * 4));
+                storeProgramPointer(ip + in.size);
+            } else if (!emitHelperCall()) return asERROR;
+            break;
+        }
+        case asBC_ADDIi:
+        case asBC_SUBIi:
+        case asBC_MULIi: {
+            if (kInlineImmInt) {
+                int a0 = asBC_SWORDARG0(ip);
+                int a1 = asBC_SWORDARG1(ip);
+                int32_t value = asBC_INTARG(ip + 1);
+                x86::Gp x = cc.new_gp32("x");
+                loadVar(a1, x);
+                switch (in.op) {
+                case asBC_ADDIi: cc.add(x, value); break;
+                case asBC_SUBIi: cc.sub(x, value); break;
+                default:         cc.imul(x, x, value); break;
+                }
                 storeVar(a0, x);
                 storeProgramPointer(ip + in.size);
             } else if (!emitHelperCall()) return asERROR;
