@@ -335,9 +335,11 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
             cc.mov(x86::dword_ptr(regs, ppOff), Imm(int64_t((intptr_t)next)));
         };
         auto emitHelperCall = [&]() -> bool {
+            JitBcHelper helper = GetJitBcHelper(in.op);
+            if (!helper) return false;
             InvokeNode* inv = nullptr;
             Error invErr = cc.invoke(Out<InvokeNode*>(inv),
-                                     Imm(int64_t((intptr_t)&JitBcFallback)),
+                                     Imm(int64_t((intptr_t)helper)),
                                      FuncSignature::build<int, asSVMRegisters*, const asDWORD*>());
             if (invErr != kErrorOk) return false;
             x86::Gp res = cc.new_gp32("res");
