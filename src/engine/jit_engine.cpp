@@ -1,5 +1,5 @@
-#include "jit_engine.h"
-#include "jit_compiler.h"
+#include "engine/jit_engine.h"
+#include "compiler/jit_compiler.h"
 
 namespace asjitx86 {
 

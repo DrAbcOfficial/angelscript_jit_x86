@@ -9,8 +9,6 @@ enum JitBcResult {
     JITBC_EXIT     = 1,
 };
 
-using BcHelperFn = int (*)(asSVMRegisters* regs, const asDWORD* bc);
-
 int JitBcFallback(asSVMRegisters* regs, const asDWORD* bc);
 
 }

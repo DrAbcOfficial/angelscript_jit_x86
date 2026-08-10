@@ -49,12 +49,19 @@ else()
 endif()
 
 target_sources(as_jit_x86 PRIVATE
-    src/as_jit_api.cpp
-    src/jit_engine.cpp
-    src/jit_compiler.cpp
-    src/bc_helpers.cpp
-    src/bc_info.cpp
-    src/emit.cpp
+    src/api/as_jit_api.cpp
+    src/engine/jit_engine.cpp
+    src/compiler/jit_compiler.cpp
+    src/codegen/emit.cpp
+    src/bytecode/bc_helpers.cpp
+    src/bytecode/helpers/stack_memory_helpers.cpp
+    src/bytecode/helpers/comparison_helpers.cpp
+    src/bytecode/helpers/numeric32_helpers.cpp
+    src/bytecode/helpers/numeric64_helpers.cpp
+    src/bytecode/helpers/runtime_helpers.cpp
+    src/bytecode/helpers/object_helpers.cpp
+    src/bytecode/helpers/power_helpers.cpp
+    src/bytecode/bc_info.cpp
 )
 
 target_include_directories(as_jit_x86

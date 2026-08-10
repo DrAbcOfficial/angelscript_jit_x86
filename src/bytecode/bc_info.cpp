@@ -1,4 +1,4 @@
-#include "bc_info.h"
+#include "bytecode/bc_info.h"
 
 namespace asjitx86 {
 

@@ -1,5 +1,5 @@
 #include "as_jit_x86.h"
-#include "jit_engine.h"
+#include "engine/jit_engine.h"
 
 void* AsJitCreateEngine(asIScriptEngine* engine) {
     if (!engine) return nullptr;

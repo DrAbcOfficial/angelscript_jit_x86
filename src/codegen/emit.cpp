@@ -1,6 +1,6 @@
-#include "emit.h"
-#include "bc_helpers.h"
-#include "bc_info.h"
+#include "codegen/emit.h"
+#include "bytecode/bc_helpers.h"
+#include "bytecode/bc_info.h"
 
 #include <asmjit/x86.h>
 

@@ -1,5 +1,5 @@
-#include "jit_compiler.h"
-#include "emit.h"
+#include "compiler/jit_compiler.h"
+#include "codegen/emit.h"
 
 namespace asjitx86 {
 

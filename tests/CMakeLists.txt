@@ -1,5 +1,5 @@
 add_executable(asjitx86_tests
-    main.cpp
+    consistency/jit_consistency.cpp
     ${CMAKE_SOURCE_DIR}/third_party/angelscript/sdk/add_on/scriptbuilder/scriptbuilder.cpp
     ${CMAKE_SOURCE_DIR}/third_party/angelscript/sdk/add_on/scriptstdstring/scriptstdstring.cpp
 )
@@ -25,7 +25,7 @@ if(WIN32)
                 $<TARGET_FILE_DIR:asjitx86_tests>)
 endif()
 
-add_executable(asjitx86_benchmark benchmark.cpp)
+add_executable(asjitx86_benchmark performance/jit_benchmark.cpp)
 target_include_directories(asjitx86_benchmark PRIVATE
     ${CMAKE_SOURCE_DIR}/include
     ${CMAKE_SOURCE_DIR}/third_party/angelscript/sdk/angelscript/include
