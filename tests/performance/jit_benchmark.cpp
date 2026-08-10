@@ -8,14 +8,22 @@
 
 namespace {
 
-constexpr const char* kScript =
+constexpr const char* kIntegerScript =
     "int main() { int sum = 0; int i = 0; int limit = 10000000; int one = 1; "
     "while (i < limit) { sum = sum + i; i = i + one; } return sum; }";
 
-asIScriptFunction* Build(asIScriptEngine* engine, const char* name) {
+constexpr const char* kSystemCallScript =
+    "int main() { int value = 0; int i = 0; int limit = 1000000; "
+    "while (i < limit) { value = addOne(value); i++; } return value; }";
+
+int AddOne(int value) {
+    return value + 1;
+}
+
+asIScriptFunction* Build(asIScriptEngine* engine, const char* name, const char* script) {
     asIScriptModule* module = engine->GetModule(name, asGM_ALWAYS_CREATE);
     if (!module) return nullptr;
-    if (module->AddScriptSection("benchmark", kScript) < 0) return nullptr;
+    if (module->AddScriptSection("benchmark", script) < 0) return nullptr;
     if (module->Build() < 0) return nullptr;
     return module->GetFunctionByName("main");
 }
@@ -52,8 +60,13 @@ int main() {
     void* jit = AsJitCreateEngine(jitEngine);
     if (!jit) return 1;
 
-    asIScriptFunction* interpreterFunction = Build(interpreter, "interpreter");
-    asIScriptFunction* jitFunction = Build(jitEngine, "jit");
+    if (interpreter->RegisterGlobalFunction("int addOne(int)", asFUNCTION(AddOne), asCALL_CDECL) < 0)
+        return 1;
+    if (jitEngine->RegisterGlobalFunction("int addOne(int)", asFUNCTION(AddOne), asCALL_CDECL) < 0)
+        return 1;
+
+    asIScriptFunction* interpreterFunction = Build(interpreter, "interpreter", kIntegerScript);
+    asIScriptFunction* jitFunction = Build(jitEngine, "jit", kIntegerScript);
     if (!interpreterFunction || !jitFunction) return 1;
 
     asDWORD interpreterResult = 0;
@@ -64,11 +77,27 @@ int main() {
     std::printf("int-loop(1e7): interpreter=%.3f ms jit=%.3f ms speedup=%.2fx\n",
                 interpreterMs, jitMs, speedup);
 
+    asIScriptFunction* interpreterSystemFunction =
+        Build(interpreter, "interpreter-system", kSystemCallScript);
+    asIScriptFunction* jitSystemFunction = Build(jitEngine, "jit-system", kSystemCallScript);
+    if (!interpreterSystemFunction || !jitSystemFunction) return 1;
+
+    asDWORD interpreterSystemResult = 0;
+    asDWORD jitSystemResult = 0;
+    double interpreterSystemMs = Run(interpreter, interpreterSystemFunction, &interpreterSystemResult);
+    double jitSystemMs = Run(jitEngine, jitSystemFunction, &jitSystemResult);
+    double systemSpeedup = interpreterSystemMs / jitSystemMs;
+    std::printf("system-call-loop(1e6): interpreter=%.3f ms jit=%.3f ms speedup=%.2fx\n",
+                interpreterSystemMs, jitSystemMs, systemSpeedup);
+
     jitEngine->Release();
     AsJitDestroyEngine(jit);
     interpreter->Release();
 
-    return interpreterMs > 0.0 && jitMs > 0.0 && interpreterResult == jitResult && speedup >= 1.0
+    return interpreterMs > 0.0 && jitMs > 0.0 &&
+                   interpreterSystemMs > 0.0 && jitSystemMs > 0.0 &&
+                   interpreterResult == jitResult && interpreterSystemResult == jitSystemResult &&
+                   speedup >= 1.0
         ? 0
         : 1;
 }

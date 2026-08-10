@@ -51,7 +51,7 @@ int BcCallSys(asSVMRegisters* regs, const asDWORD* bc) {
         if (ctx->m_status != asEXECUTION_ACTIVE)
             return JITBC_EXIT;
     }
-    return JITBC_EXIT;
+    return JITBC_CONTINUE;
 }
 
 int BcCallBnd(asSVMRegisters* regs, const asDWORD* bc) {
