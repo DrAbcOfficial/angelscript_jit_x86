@@ -11,6 +11,41 @@
 
 namespace asjitx86::detail {
 
+namespace {
+
+thread_local bool s_jitCallChainActive = false;
+
+class JitCallChainGuard {
+public:
+    JitCallChainGuard() { s_jitCallChainActive = true; }
+    ~JitCallChainGuard() { s_jitCallChainActive = false; }
+};
+
+int ResumeJitCallChain(asSVMRegisters* regs, asUINT callerCallStackLength) {
+    auto* ctx = Ctx(regs);
+    if (s_jitCallChainActive) return JITBC_EXIT;
+
+    JitCallChainGuard guard;
+    while (ctx->m_status == asEXECUTION_ACTIVE &&
+           ctx->m_callStack.GetLength() > callerCallStackLength) {
+        asCScriptFunction* function = ctx->m_currentFunction;
+        asDWORD* programPointer = regs->programPointer;
+        if (!function || !function->scriptData || !function->scriptData->jitFunction ||
+            !programPointer || (*programPointer & 0xFF) != asBC_JitEntry)
+            return JITBC_EXIT;
+
+        asPWORD jitArg = asBC_PTRARG(programPointer);
+        if (!jitArg) return JITBC_EXIT;
+        function->scriptData->jitFunction(regs, jitArg);
+    }
+
+    return ctx->m_status == asEXECUTION_ACTIVE &&
+           ctx->m_callStack.GetLength() == callerCallStackLength ?
+           JITBC_CONTINUE : JITBC_EXIT;
+}
+
+}
+
 int BcJitEntry(asSVMRegisters* regs, const asDWORD* bc) {
     regs->programPointer = NextBc(bc, 1 + AS_PTR_SIZE);
     return JITBC_CONTINUE;
@@ -18,10 +53,11 @@ int BcJitEntry(asSVMRegisters* regs, const asDWORD* bc) {
 
 int BcCall(asSVMRegisters* regs, const asDWORD* bc) {
     auto* ctx = Ctx(regs);
+    asUINT callerCallStackLength = ctx->m_callStack.GetLength();
     int i = asBC_INTARG(bc);
     regs->programPointer = NextBc(bc, 2);
     ctx->CallScriptFunction(ctx->m_engine->scriptFunctions[i]);
-    return JITBC_EXIT;
+    return ResumeJitCallChain(regs, callerCallStackLength);
 }
 
 int BcRet(asSVMRegisters* regs, const asDWORD* bc) {
@@ -56,6 +92,7 @@ int BcCallSys(asSVMRegisters* regs, const asDWORD* bc) {
 
 int BcCallBnd(asSVMRegisters* regs, const asDWORD* bc) {
     auto* ctx = Ctx(regs);
+    asUINT callerCallStackLength = ctx->m_callStack.GetLength();
     int i = asBC_INTARG(bc);
     regs->programPointer = const_cast<asDWORD*>(bc);
     int funcId = ctx->m_engine->importedFunctions[i & ~FUNC_IMPORTED]->boundFunctionId;
@@ -69,6 +106,7 @@ int BcCallBnd(asSVMRegisters* regs, const asDWORD* bc) {
     if (func->funcType == asFUNC_SCRIPT) {
         regs->programPointer += 2;
         ctx->CallScriptFunction(func);
+        return ResumeJitCallChain(regs, callerCallStackLength);
     }
     else if (func->funcType == asFUNC_SYSTEM) {
         regs->stackPointer += CallSystemFunction(func->id, ctx);
@@ -83,16 +121,19 @@ int BcCallBnd(asSVMRegisters* regs, const asDWORD* bc) {
 
 int BcCallIntf(asSVMRegisters* regs, const asDWORD* bc) {
     auto* ctx = Ctx(regs);
+    asUINT callerCallStackLength = ctx->m_callStack.GetLength();
     int i = asBC_INTARG(bc);
     regs->programPointer = NextBc(bc, 2);
     ctx->CallInterfaceMethod(ctx->m_engine->GetScriptFunction(i));
-    return JITBC_EXIT;
+    return ResumeJitCallChain(regs, callerCallStackLength);
 }
 
 int BcCallPtr(asSVMRegisters* regs, const asDWORD* bc) {
     auto* ctx = Ctx(regs);
+    asUINT callerCallStackLength = ctx->m_callStack.GetLength();
     asCScriptFunction* func = *(asCScriptFunction**)(regs->stackFramePointer - asBC_SWORDARG0(bc));
     bool systemCall = false;
+    bool scriptCall = false;
     regs->programPointer = const_cast<asDWORD*>(bc);
     if (func == 0) {
         regs->programPointer++;
@@ -103,6 +144,7 @@ int BcCallPtr(asSVMRegisters* regs, const asDWORD* bc) {
     if (func->funcType == asFUNC_SCRIPT) {
         regs->programPointer++;
         ctx->CallScriptFunction(func);
+        scriptCall = true;
     }
     else if (func->funcType == asFUNC_DELEGATE) {
         regs->stackPointer -= AS_PTR_SIZE;
@@ -115,6 +157,7 @@ int BcCallPtr(asSVMRegisters* regs, const asDWORD* bc) {
         else {
             regs->programPointer++;
             ctx->CallInterfaceMethod(func->funcForDelegate);
+            scriptCall = true;
         }
     }
     else if (func->funcType == asFUNC_SYSTEM) {
@@ -125,9 +168,10 @@ int BcCallPtr(asSVMRegisters* regs, const asDWORD* bc) {
     else if (func->funcType == asFUNC_IMPORTED) {
         regs->programPointer++;
         int funcId = ctx->m_engine->importedFunctions[func->id & ~FUNC_IMPORTED]->boundFunctionId;
-        if (funcId > 0)
+        if (funcId > 0) {
             ctx->CallScriptFunction(ctx->m_engine->scriptFunctions[funcId]);
-        else {
+            scriptCall = true;
+        } else {
             ctx->m_needToCleanupArgs = true;
             ctx->SetInternalException(TXT_UNBOUND_FUNCTION);
         }
@@ -135,6 +179,8 @@ int BcCallPtr(asSVMRegisters* regs, const asDWORD* bc) {
     else {
         assert(false);
     }
+    if (scriptCall)
+        return ResumeJitCallChain(regs, callerCallStackLength);
     return systemCall && ctx->m_status == asEXECUTION_ACTIVE ? JITBC_CONTINUE : JITBC_EXIT;
 }
 

@@ -194,6 +194,7 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
         off += static_cast<uint32_t>(sz);
     }
     if (off != bcLen) return asERROR;
+    const bool inlineFieldMemory = ins.size() <= 256;
 
     std::vector<uint8_t> needsLabel(ins.size(), 0);
     for (size_t i = 0; i < ins.size(); i++) {
@@ -251,7 +252,8 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
     std::vector<int8_t> fusedFallValue(ins.size(), 2);
     if (kFuseCmpBranch && kInlineCmp6c) {
         for (size_t i = 0; i + 2 < ins.size(); i++) {
-            if (ins[i].op != asBC_CMPi || !IsConditionalBranch(ins[i + 1].op) || needsLabel[i + 1])
+            if ((ins[i].op != asBC_CMPi && ins[i].op != asBC_CMPIi) ||
+                !IsConditionalBranch(ins[i + 1].op) || needsLabel[i + 1])
                 continue;
             const EmitIns& branch = ins[i + 1];
             int64_t target = int64_t(branch.off) + 2 + asBC_INTARG(bc + branch.off);
@@ -295,7 +297,6 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
     fnNode->set_arg(0, regs);
     fnNode->set_arg(1, jitArg);
 
-    const uint32_t ppOff = offsetof(asSVMRegisters, programPointer);
     const uint32_t fpOff = offsetof(asSVMRegisters, stackFramePointer);
     const uint32_t spOff = offsetof(asSVMRegisters, stackPointer);
 
@@ -339,9 +340,6 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
         auto storeSp = [&](const x86::Gp& src) {
             cc.mov(x86::dword_ptr(regs, spOff), src);
         };
-        auto storeProgramPointer = [&](const asDWORD* next) {
-            cc.mov(x86::dword_ptr(regs, ppOff), Imm(int64_t((intptr_t)next)));
-        };
         auto emitHelperCall = [&]() -> bool {
             JitBcHelper helper = GetJitBcHelper(in.op);
             if (!helper) return false;
@@ -365,7 +363,6 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
             if (target < 0 || target >= int64_t(bcLen)) return asERROR;
             int targetIndex = indexOfOffset[static_cast<size_t>(target)];
             if (targetIndex < 0) return asERROR;
-            storeProgramPointer(bc + target);
             cc.jmp(labels[static_cast<size_t>(targetIndex)]);
             break;
         }
@@ -385,7 +382,6 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
                 cc.cmp(x86::byte_ptr(regs, offsetof(asSVMRegisters, valueRegister)), 0);
             else
                 cc.cmp(x86::dword_ptr(regs, offsetof(asSVMRegisters, valueRegister)), 0);
-            storeProgramPointer(bc + target);
             switch (in.op) {
             case asBC_JZ:     cc.jz(labels[static_cast<size_t>(targetIndex)]); break;
             case asBC_JNZ:    cc.jnz(labels[static_cast<size_t>(targetIndex)]); break;
@@ -397,7 +393,6 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
             case asBC_JLowNZ: cc.jnz(labels[static_cast<size_t>(targetIndex)]); break;
             default: break;
             }
-            storeProgramPointer(ip + in.size);
             break;
         }
         case asBC_PshC4: {
@@ -407,7 +402,6 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
                 cc.sub(sp, 4);
                 cc.mov(x86::dword_ptr(sp), Imm(int64_t((int32_t)asBC_DWORDARG(ip))));
                 storeSp(sp);
-                storeProgramPointer(ip + in.size);
             } else if (!emitHelperCall()) return asERROR;
             break;
         }
@@ -421,7 +415,6 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
                 loadVar(offset, v);
                 cc.mov(x86::dword_ptr(sp), v);
                 storeSp(sp);
-                storeProgramPointer(ip + in.size);
             } else if (!emitHelperCall()) return asERROR;
             break;
         }
@@ -438,8 +431,15 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
                 cc.mov(x86::dword_ptr(sp), low);
                 cc.mov(x86::dword_ptr(sp, 4), high);
                 storeSp(sp);
-                storeProgramPointer(ip + in.size);
             } else if (!emitHelperCall()) return asERROR;
+            break;
+        }
+        case asBC_VAR: {
+            x86::Gp sp = cc.new_gp32("sp");
+            loadSp(sp);
+            cc.sub(sp, 4);
+            cc.mov(x86::dword_ptr(sp), Imm(int64_t(asBC_SWORDARG0(ip))));
+            storeSp(sp);
             break;
         }
         case asBC_PSF: {
@@ -452,7 +452,6 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
                 cc.lea(v, x86::dword_ptr(fp, -offset * 4));
                 cc.mov(x86::dword_ptr(sp), v);
                 storeSp(sp);
-                storeProgramPointer(ip + in.size);
             } else if (!emitHelperCall()) return asERROR;
             break;
         }
@@ -461,7 +460,6 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
                 int offset = asBC_SWORDARG0(ip);
                 cc.mov(x86::dword_ptr(fp, -offset * 4),
                        Imm(int64_t((int32_t)asBC_DWORDARG(ip))));
-                storeProgramPointer(ip + in.size);
             } else if (!emitHelperCall()) return asERROR;
             break;
         }
@@ -472,7 +470,6 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
                 x86::Gp value = cc.new_gp32("value");
                 loadVar(source, value);
                 storeVar(destination, value);
-                storeProgramPointer(ip + in.size);
             } else if (!emitHelperCall()) return asERROR;
             break;
         }
@@ -482,7 +479,18 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
                 x86::Gp value = cc.new_gp32("value");
                 loadVar(source, value);
                 cc.mov(x86::dword_ptr(regs, offsetof(asSVMRegisters, valueRegister)), value);
-                storeProgramPointer(ip + in.size);
+            } else if (!emitHelperCall()) return asERROR;
+            break;
+        }
+        case asBC_CpyVtoR8: {
+            if (kInlineCallV8) {
+                int source = asBC_SWORDARG0(ip);
+                x86::Gp low = cc.new_gp32("low");
+                x86::Gp high = cc.new_gp32("high");
+                cc.mov(low, x86::dword_ptr(fp, -source * 4));
+                cc.mov(high, x86::dword_ptr(fp, -source * 4 + 4));
+                cc.mov(x86::dword_ptr(regs, offsetof(asSVMRegisters, valueRegister)), low);
+                cc.mov(x86::dword_ptr(regs, offsetof(asSVMRegisters, valueRegister) + 4), high);
             } else if (!emitHelperCall()) return asERROR;
             break;
         }
@@ -492,7 +500,6 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
                 x86::Gp value = cc.new_gp32("value");
                 cc.mov(value, x86::dword_ptr(regs, offsetof(asSVMRegisters, valueRegister)));
                 storeVar(destination, value);
-                storeProgramPointer(ip + in.size);
             } else if (!emitHelperCall()) return asERROR;
             break;
         }
@@ -505,7 +512,6 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
                 cc.mov(high, x86::dword_ptr(regs, offsetof(asSVMRegisters, valueRegister) + 4));
                 cc.mov(x86::dword_ptr(fp, -destination * 4), low);
                 cc.mov(x86::dword_ptr(fp, -destination * 4 + 4), high);
-                storeProgramPointer(ip + in.size);
             } else if (!emitHelperCall()) return asERROR;
             break;
         }
@@ -517,8 +523,32 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
                        Imm(int64_t((int32_t)asDWORD(value))));
                 cc.mov(x86::dword_ptr(fp, -offset * 4 + 4),
                        Imm(int64_t((int32_t)asDWORD(value >> 32))));
-                storeProgramPointer(ip + in.size);
             } else if (!emitHelperCall()) return asERROR;
+            break;
+        }
+        case asBC_STOREOBJ: {
+            int destination = asBC_SWORDARG0(ip);
+            x86::Gp object = cc.new_gp32("object");
+            cc.mov(object, x86::dword_ptr(regs, offsetof(asSVMRegisters, objectRegister)));
+            storeVar(destination, object);
+            cc.mov(x86::dword_ptr(regs, offsetof(asSVMRegisters, objectRegister)), 0);
+            break;
+        }
+        case asBC_GETOBJ:
+        case asBC_GETOBJREF: {
+            x86::Gp sp = cc.new_gp32("sp");
+            x86::Gp slot = cc.new_gp32("slot");
+            x86::Gp offset = cc.new_gp32("offset");
+            x86::Gp object = cc.new_gp32("object");
+            loadSp(sp);
+            cc.lea(slot, x86::dword_ptr(sp, asBC_WORDARG0(ip) * 4));
+            cc.mov(offset, x86::dword_ptr(slot));
+            cc.shl(offset, 2);
+            cc.neg(offset);
+            cc.mov(object, x86::dword_ptr(fp, offset));
+            cc.mov(x86::dword_ptr(slot), object);
+            if (in.op == asBC_GETOBJ)
+                cc.mov(x86::dword_ptr(fp, offset), 0);
             break;
         }
         case asBC_CpyVtoV8: {
@@ -531,8 +561,152 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
                 cc.mov(high, x86::dword_ptr(fp, -source * 4 + 4));
                 cc.mov(x86::dword_ptr(fp, -destination * 4), low);
                 cc.mov(x86::dword_ptr(fp, -destination * 4 + 4), high);
-                storeProgramPointer(ip + in.size);
             } else if (!emitHelperCall()) return asERROR;
+            break;
+        }
+        case asBC_CpyVtoG4: {
+            int source = asBC_SWORDARG0(ip);
+            x86::Gp address = cc.new_gp32("address");
+            x86::Gp value = cc.new_gp32("value");
+            loadVar(source, value);
+            cc.mov(address, Imm(int64_t((intptr_t)asBC_PTRARG(ip))));
+            cc.mov(x86::dword_ptr(address), value);
+            break;
+        }
+        case asBC_CpyGtoV4: {
+            int destination = asBC_SWORDARG0(ip);
+            x86::Gp address = cc.new_gp32("address");
+            x86::Gp value = cc.new_gp32("value");
+            cc.mov(address, Imm(int64_t((intptr_t)asBC_PTRARG(ip))));
+            cc.mov(value, x86::dword_ptr(address));
+            storeVar(destination, value);
+            break;
+        }
+        case asBC_SetG4: {
+            x86::Gp address = cc.new_gp32("address");
+            cc.mov(address, Imm(int64_t((intptr_t)asBC_PTRARG(ip))));
+            cc.mov(x86::dword_ptr(address),
+                   Imm(int64_t((int32_t)asBC_DWORDARG(ip + AS_PTR_SIZE))));
+            break;
+        }
+        case asBC_WRTV1:
+        case asBC_WRTV2:
+        case asBC_WRTV4: {
+            if (!inlineFieldMemory) {
+                if (!emitHelperCall()) return asERROR;
+                break;
+            }
+            int source = asBC_SWORDARG0(ip);
+            x86::Gp address = cc.new_gp32("address");
+            x86::Gp value = cc.new_gp32("value");
+            cc.mov(address, x86::dword_ptr(regs, offsetof(asSVMRegisters, valueRegister)));
+            loadVar(source, value);
+            if (in.op == asBC_WRTV1)
+                cc.mov(x86::byte_ptr(address), value.r8());
+            else if (in.op == asBC_WRTV2)
+                cc.mov(x86::word_ptr(address), value.r16());
+            else
+                cc.mov(x86::dword_ptr(address), value);
+            break;
+        }
+        case asBC_WRTV8: {
+            if (!inlineFieldMemory) {
+                if (!emitHelperCall()) return asERROR;
+                break;
+            }
+            int source = asBC_SWORDARG0(ip);
+            x86::Gp address = cc.new_gp32("address");
+            x86::Gp low = cc.new_gp32("low");
+            x86::Gp high = cc.new_gp32("high");
+            cc.mov(address, x86::dword_ptr(regs, offsetof(asSVMRegisters, valueRegister)));
+            cc.mov(low, x86::dword_ptr(fp, -source * 4));
+            cc.mov(high, x86::dword_ptr(fp, -source * 4 + 4));
+            cc.mov(x86::dword_ptr(address), low);
+            cc.mov(x86::dword_ptr(address, 4), high);
+            break;
+        }
+        case asBC_RDR1:
+        case asBC_RDR2:
+        case asBC_RDR4: {
+            if (!inlineFieldMemory) {
+                if (!emitHelperCall()) return asERROR;
+                break;
+            }
+            int destination = asBC_SWORDARG0(ip);
+            x86::Gp address = cc.new_gp32("address");
+            x86::Gp value = cc.new_gp32("value");
+            cc.mov(address, x86::dword_ptr(regs, offsetof(asSVMRegisters, valueRegister)));
+            if (in.op == asBC_RDR1)
+                cc.movzx(value, x86::byte_ptr(address));
+            else if (in.op == asBC_RDR2)
+                cc.movzx(value, x86::word_ptr(address));
+            else
+                cc.mov(value, x86::dword_ptr(address));
+            storeVar(destination, value);
+            break;
+        }
+        case asBC_RDR8: {
+            if (!inlineFieldMemory) {
+                if (!emitHelperCall()) return asERROR;
+                break;
+            }
+            int destination = asBC_SWORDARG0(ip);
+            x86::Gp address = cc.new_gp32("address");
+            x86::Gp low = cc.new_gp32("low");
+            x86::Gp high = cc.new_gp32("high");
+            cc.mov(address, x86::dword_ptr(regs, offsetof(asSVMRegisters, valueRegister)));
+            cc.mov(low, x86::dword_ptr(address));
+            cc.mov(high, x86::dword_ptr(address, 4));
+            cc.mov(x86::dword_ptr(fp, -destination * 4), low);
+            cc.mov(x86::dword_ptr(fp, -destination * 4 + 4), high);
+            break;
+        }
+        case asBC_LoadVObjR: {
+            if (!inlineFieldMemory) {
+                if (!emitHelperCall()) return asERROR;
+                break;
+            }
+            int objectOffset = asBC_SWORDARG0(ip);
+            int propertyOffset = asBC_SWORDARG1(ip);
+            x86::Gp address = cc.new_gp32("address");
+            cc.lea(address, x86::dword_ptr(fp, -objectOffset * 4));
+            cc.add(address, propertyOffset);
+            cc.mov(x86::dword_ptr(regs, offsetof(asSVMRegisters, valueRegister)), address);
+            break;
+        }
+        case asBC_LoadThisR:
+        case asBC_LoadRObjR: {
+            if (!inlineFieldMemory) {
+                if (!emitHelperCall()) return asERROR;
+                break;
+            }
+            const int objectOffset = in.op == asBC_LoadThisR ? 0 : asBC_SWORDARG0(ip);
+            const int propertyOffset = in.op == asBC_LoadThisR ?
+                                       asBC_SWORDARG0(ip) : asBC_SWORDARG1(ip);
+            x86::Gp address = cc.new_gp32("address");
+            Label fallback = cc.new_label();
+            Label done = cc.new_label();
+            cc.mov(address, x86::dword_ptr(fp, -objectOffset * 4));
+            cc.test(address, address);
+            cc.jz(fallback);
+            cc.add(address, propertyOffset);
+            cc.mov(x86::dword_ptr(regs, offsetof(asSVMRegisters, valueRegister)), address);
+            cc.jmp(done);
+            cc.bind(fallback);
+            if (!emitHelperCall()) return asERROR;
+            cc.bind(done);
+            break;
+        }
+        case asBC_ChkNullV: {
+            int source = asBC_SWORDARG0(ip);
+            Label fallback = cc.new_label();
+            Label done = cc.new_label();
+            cc.cmp(x86::dword_ptr(fp, -source * 4), 0);
+            cc.je(fallback);
+            cc.jmp(done);
+            cc.bind(fallback);
+            if (!emitHelperCall()) return asERROR;
+            cc.bind(done);
             break;
         }
         case asBC_ADDi64: {
@@ -552,7 +726,6 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
                 cc.adc(high, rightHigh);
                 cc.mov(x86::dword_ptr(fp, -destination * 4), low);
                 cc.mov(x86::dword_ptr(fp, -destination * 4 + 4), high);
-                storeProgramPointer(ip + in.size);
             } else if (!emitHelperCall()) return asERROR;
             break;
         }
@@ -576,8 +749,161 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
                 default:        cc.imul(x, y); break;
                 }
                 storeVar(a0, x);
-                storeProgramPointer(ip + in.size);
             } else if (!emitHelperCall()) return asERROR;
+            break;
+        }
+        case asBC_ADDf:
+        case asBC_SUBf:
+        case asBC_MULf: {
+            int destination = asBC_SWORDARG0(ip);
+            int left = asBC_SWORDARG1(ip);
+            int right = asBC_SWORDARG2(ip);
+            x86::Vec value = cc.new_xmm_ss("value");
+            cc.movss(value, x86::dword_ptr(fp, -left * 4));
+            if (in.op == asBC_ADDf)
+                cc.addss(value, x86::dword_ptr(fp, -right * 4));
+            else if (in.op == asBC_SUBf)
+                cc.subss(value, x86::dword_ptr(fp, -right * 4));
+            else
+                cc.mulss(value, x86::dword_ptr(fp, -right * 4));
+            cc.movss(x86::dword_ptr(fp, -destination * 4), value);
+            break;
+        }
+        case asBC_ADDd:
+        case asBC_SUBd:
+        case asBC_MULd: {
+            int destination = asBC_SWORDARG0(ip);
+            int left = asBC_SWORDARG1(ip);
+            int right = asBC_SWORDARG2(ip);
+            x86::Vec value = cc.new_xmm_sd("value");
+            cc.movsd(value, x86::qword_ptr(fp, -left * 4));
+            if (in.op == asBC_ADDd)
+                cc.addsd(value, x86::qword_ptr(fp, -right * 4));
+            else if (in.op == asBC_SUBd)
+                cc.subsd(value, x86::qword_ptr(fp, -right * 4));
+            else
+                cc.mulsd(value, x86::qword_ptr(fp, -right * 4));
+            cc.movsd(x86::qword_ptr(fp, -destination * 4), value);
+            break;
+        }
+        case asBC_DIVf: {
+            int destination = asBC_SWORDARG0(ip);
+            int left = asBC_SWORDARG1(ip);
+            int right = asBC_SWORDARG2(ip);
+            x86::Gp divisorBits = cc.new_gp32("divisorBits");
+            Label fallback = cc.new_label();
+            Label done = cc.new_label();
+            loadVar(right, divisorBits);
+            cc.and_(divisorBits, 0x7FFFFFFF);
+            cc.jz(fallback);
+            {
+                x86::Vec value = cc.new_xmm_ss("value");
+                cc.movss(value, x86::dword_ptr(fp, -left * 4));
+                cc.divss(value, x86::dword_ptr(fp, -right * 4));
+                cc.movss(x86::dword_ptr(fp, -destination * 4), value);
+            }
+            cc.jmp(done);
+            cc.bind(fallback);
+            if (!emitHelperCall()) return asERROR;
+            cc.bind(done);
+            break;
+        }
+        case asBC_DIVd: {
+            int destination = asBC_SWORDARG0(ip);
+            int left = asBC_SWORDARG1(ip);
+            int right = asBC_SWORDARG2(ip);
+            x86::Gp zeroTest = cc.new_gp32("zeroTest");
+            x86::Gp high = cc.new_gp32("high");
+            Label fallback = cc.new_label();
+            Label done = cc.new_label();
+            cc.mov(zeroTest, x86::dword_ptr(fp, -right * 4));
+            cc.mov(high, x86::dword_ptr(fp, -right * 4 + 4));
+            cc.and_(high, 0x7FFFFFFF);
+            cc.or_(zeroTest, high);
+            cc.jz(fallback);
+            {
+                x86::Vec value = cc.new_xmm_sd("value");
+                cc.movsd(value, x86::qword_ptr(fp, -left * 4));
+                cc.divsd(value, x86::qword_ptr(fp, -right * 4));
+                cc.movsd(x86::qword_ptr(fp, -destination * 4), value);
+            }
+            cc.jmp(done);
+            cc.bind(fallback);
+            if (!emitHelperCall()) return asERROR;
+            cc.bind(done);
+            break;
+        }
+        case asBC_ADDIf:
+        case asBC_SUBIf:
+        case asBC_MULIf: {
+            int destination = asBC_SWORDARG0(ip);
+            int source = asBC_SWORDARG1(ip);
+            x86::Gp immediate = cc.new_gp32("immediate");
+            x86::Vec value = cc.new_xmm_ss("value");
+            x86::Vec operand = cc.new_xmm_ss("operand");
+            cc.movss(value, x86::dword_ptr(fp, -source * 4));
+            cc.mov(immediate, Imm(int64_t((int32_t)asBC_DWORDARG(ip + 1))));
+            cc.movd(operand, immediate);
+            if (in.op == asBC_ADDIf)
+                cc.addss(value, operand);
+            else if (in.op == asBC_SUBIf)
+                cc.subss(value, operand);
+            else
+                cc.mulss(value, operand);
+            cc.movss(x86::dword_ptr(fp, -destination * 4), value);
+            break;
+        }
+        case asBC_NEGf: {
+            cc.xor_(x86::dword_ptr(fp, -asBC_SWORDARG0(ip) * 4),
+                    Imm(int64_t(uint32_t(0x80000000u))));
+            break;
+        }
+        case asBC_NEGd: {
+            cc.xor_(x86::dword_ptr(fp, -asBC_SWORDARG0(ip) * 4 + 4),
+                    Imm(int64_t(uint32_t(0x80000000u))));
+            break;
+        }
+        case asBC_CMPf:
+        case asBC_CMPd:
+        case asBC_CMPIf: {
+            x86::Vec left = in.op == asBC_CMPd ?
+                            cc.new_xmm_sd("left") : cc.new_xmm_ss("left");
+            x86::Vec right = in.op == asBC_CMPd ?
+                             cc.new_xmm_sd("right") : cc.new_xmm_ss("right");
+            if (in.op == asBC_CMPd) {
+                cc.movsd(left, x86::qword_ptr(fp, -asBC_SWORDARG0(ip) * 4));
+                cc.movsd(right, x86::qword_ptr(fp, -asBC_SWORDARG1(ip) * 4));
+                cc.ucomisd(left, right);
+            } else {
+                cc.movss(left, x86::dword_ptr(fp, -asBC_SWORDARG0(ip) * 4));
+                if (in.op == asBC_CMPf) {
+                    cc.movss(right, x86::dword_ptr(fp, -asBC_SWORDARG1(ip) * 4));
+                } else {
+                    x86::Gp immediate = cc.new_gp32("immediate");
+                    cc.mov(immediate, Imm(int64_t((int32_t)asBC_DWORDARG(ip))));
+                    cc.movd(right, immediate);
+                }
+                cc.ucomiss(left, right);
+            }
+
+            x86::Gp result = cc.new_gp32("result");
+            Label less = cc.new_label();
+            Label equal = cc.new_label();
+            Label done = cc.new_label();
+            cc.jp(done);
+            cc.jb(less);
+            cc.je(equal);
+            cc.bind(done);
+            cc.mov(result, 1);
+            Label store = cc.new_label();
+            cc.jmp(store);
+            cc.bind(less);
+            cc.mov(result, -1);
+            cc.jmp(store);
+            cc.bind(equal);
+            cc.xor_(result, result);
+            cc.bind(store);
+            cc.mov(x86::dword_ptr(regs, offsetof(asSVMRegisters, valueRegister)), result);
             break;
         }
         case asBC_DIVi:
@@ -612,7 +938,6 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
                 cc.bind(fallback);
                 if (!emitHelperCall()) return asERROR;
                 cc.bind(done);
-                storeProgramPointer(ip + in.size);
             } else if (!emitHelperCall()) return asERROR;
             break;
         }
@@ -639,7 +964,6 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
                 default:        cc.sar(x, y); break;
                 }
                 storeVar(a0, x);
-                storeProgramPointer(ip + in.size);
             } else if (!emitHelperCall()) return asERROR;
             break;
         }
@@ -650,7 +974,6 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
                 loadVar(a0, x);
                 cc.neg(x);
                 storeVar(a0, x);
-                storeProgramPointer(ip + in.size);
             } else if (!emitHelperCall()) return asERROR;
             break;
         }
@@ -663,7 +986,6 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
                 cc.set(x86::CondCode::kEqual, x);
                 cc.movzx(x, x.r8());
                 storeVar(a0, x);
-                storeProgramPointer(ip + in.size);
             } else if (!emitHelperCall()) return asERROR;
             break;
         }
@@ -675,7 +997,6 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
                     cc.inc(x86::dword_ptr(fp, -a0 * 4));
                 else
                     cc.dec(x86::dword_ptr(fp, -a0 * 4));
-                storeProgramPointer(ip + in.size);
             } else if (!emitHelperCall()) return asERROR;
             break;
         }
@@ -694,26 +1015,27 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
                 default:         cc.imul(x, x, value); break;
                 }
                 storeVar(a0, x);
-                storeProgramPointer(ip + in.size);
             } else if (!emitHelperCall()) return asERROR;
             break;
         }
-        case asBC_CMPi: {
+        case asBC_CMPi:
+        case asBC_CMPIi: {
             if (kInlineCmp6c) {
                 int a0 = asBC_SWORDARG0(ip);
-                int a1 = asBC_SWORDARG1(ip);
                 x86::Gp x = cc.new_gp32("x");
-                x86::Gp y = cc.new_gp32("y");
                 loadVar(a0, x);
-                loadVar(a1, y);
-                cc.cmp(x, y);
+                x86::Gp y = cc.new_gp32("y");
+                if (in.op == asBC_CMPi) {
+                    loadVar(asBC_SWORDARG1(ip), y);
+                    cc.cmp(x, y);
+                } else {
+                    cc.cmp(x, Imm(int64_t(asBC_INTARG(ip))));
+                }
                 if (fusedCmpBranch[i]) {
                     const EmitIns& branch = ins[i + 1];
                     const asDWORD* branchIp = bc + branch.off;
                     int64_t target = int64_t(branch.off) + 2 + asBC_INTARG(branchIp);
                     int targetIndex = indexOfOffset[static_cast<size_t>(target)];
-                    storeProgramPointer(ip + in.size);
-                    storeProgramPointer(bc + target);
                     switch (branch.op) {
                     case asBC_JZ:     cc.jz(labels[static_cast<size_t>(targetIndex)]); break;
                     case asBC_JNZ:    cc.jnz(labels[static_cast<size_t>(targetIndex)]); break;
@@ -728,7 +1050,6 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
                     if (fusedFallValue[i] != 2)
                         cc.mov(x86::dword_ptr(regs, offsetof(asSVMRegisters, valueRegister)),
                                fusedFallValue[i]);
-                    storeProgramPointer(branchIp + branch.size);
                 } else {
                     cc.set(x86::CondCode::kSignedGT, x);
                     cc.set(x86::CondCode::kSignedLT, y);
@@ -736,20 +1057,17 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
                     cc.movzx(y, y.r8());
                     cc.sub(x, y);
                     cc.mov(x86::dword_ptr(regs, offsetof(asSVMRegisters, valueRegister)), x);
-                    storeProgramPointer(ip + in.size);
                 }
             } else if (!emitHelperCall()) return asERROR;
             break;
         }
         case asBC_JitEntry:
-            storeProgramPointer(ip + in.size);
             break;
         case asBC_SUSPEND: {
             Label process = cc.new_label();
             Label done = cc.new_label();
             cc.cmp(x86::byte_ptr(regs, offsetof(asSVMRegisters, doProcessSuspend)), 0);
             cc.jne(process);
-            storeProgramPointer(ip + in.size);
             cc.jmp(done);
             cc.bind(process);
             if (!emitHelperCall()) return asERROR;

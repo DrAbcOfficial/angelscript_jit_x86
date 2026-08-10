@@ -7,6 +7,8 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <limits>
 
 namespace {
@@ -1009,6 +1011,7 @@ bool ModuleHasJitFunctions(asIScriptModule* mod) {
 }
 
 int main() {
+    const char* selectedCase = std::getenv("ASJITX86_SHOWCASE_CASE");
     asIScriptEngine* interpreter = asCreateScriptEngine(ANGELSCRIPT_VERSION);
     asIScriptEngine* jitEngine = asCreateScriptEngine(ANGELSCRIPT_VERSION);
     if (!interpreter || !jitEngine) return 1;
@@ -1045,6 +1048,7 @@ int main() {
 
     for (size_t c = 0; c < sizeof(kCases) / sizeof(kCases[0]); c++) {
         const CaseDef& def = kCases[c];
+        if (selectedCase && std::strcmp(selectedCase, def.name) != 0) continue;
         asIScriptFunction* interpFunc = BuildCase(interpreter, def);
         asIScriptFunction* jitFunc = BuildCase(jitEngine, def);
         if (!interpFunc || !jitFunc) {
@@ -1082,7 +1086,8 @@ int main() {
     AsJitDestroyEngine(jit);
     interpreter->Release();
 
-    bool pass = failures == 0 && measured == int(sizeof(kCases) / sizeof(kCases[0]));
+    const int expectedCases = selectedCase ? 1 : int(sizeof(kCases) / sizeof(kCases[0]));
+    bool pass = failures == 0 && measured == expectedCases;
     std::printf(pass ? "SHOWCASE PASSED\n" : "SHOWCASE FAILED\n");
     return pass ? 0 : 1;
 }
