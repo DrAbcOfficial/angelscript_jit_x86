@@ -91,6 +91,7 @@ bool PreservesValueRegister(asEBCInstr op) {
     case asBC_CpyVtoV4:
     case asBC_CpyVtoV8:
     case asBC_CpyRtoV4:
+    case asBC_CpyRtoV8:
     case asBC_CpyVtoG4:
     case asBC_CpyGtoV4:
     case asBC_iTOf:
@@ -155,6 +156,7 @@ constexpr bool kInlinePsf     = true;
 constexpr bool kInlineLocalV4 = true;
 constexpr bool kInlineLocalV8 = true;
 constexpr bool kInlineValueR4 = true;
+constexpr bool kInlineCallV8  = true;
 constexpr bool kInlineAdd64   = true;
 constexpr bool kInlineAdd6b   = true;
 constexpr bool kInlineSub6b   = true;
@@ -423,6 +425,23 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
             } else if (!emitHelperCall()) return asERROR;
             break;
         }
+        case asBC_PshV8: {
+            if (kInlineCallV8) {
+                int source = asBC_SWORDARG0(ip);
+                x86::Gp sp = cc.new_gp32("sp");
+                x86::Gp low = cc.new_gp32("low");
+                x86::Gp high = cc.new_gp32("high");
+                loadSp(sp);
+                cc.sub(sp, 8);
+                cc.mov(low, x86::dword_ptr(fp, -source * 4));
+                cc.mov(high, x86::dword_ptr(fp, -source * 4 + 4));
+                cc.mov(x86::dword_ptr(sp), low);
+                cc.mov(x86::dword_ptr(sp, 4), high);
+                storeSp(sp);
+                storeProgramPointer(ip + in.size);
+            } else if (!emitHelperCall()) return asERROR;
+            break;
+        }
         case asBC_PSF: {
             if (kInlinePsf) {
                 int offset = asBC_SWORDARG0(ip);
@@ -473,6 +492,19 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
                 x86::Gp value = cc.new_gp32("value");
                 cc.mov(value, x86::dword_ptr(regs, offsetof(asSVMRegisters, valueRegister)));
                 storeVar(destination, value);
+                storeProgramPointer(ip + in.size);
+            } else if (!emitHelperCall()) return asERROR;
+            break;
+        }
+        case asBC_CpyRtoV8: {
+            if (kInlineCallV8) {
+                int destination = asBC_SWORDARG0(ip);
+                x86::Gp low = cc.new_gp32("low");
+                x86::Gp high = cc.new_gp32("high");
+                cc.mov(low, x86::dword_ptr(regs, offsetof(asSVMRegisters, valueRegister)));
+                cc.mov(high, x86::dword_ptr(regs, offsetof(asSVMRegisters, valueRegister) + 4));
+                cc.mov(x86::dword_ptr(fp, -destination * 4), low);
+                cc.mov(x86::dword_ptr(fp, -destination * 4 + 4), high);
                 storeProgramPointer(ip + in.size);
             } else if (!emitHelperCall()) return asERROR;
             break;

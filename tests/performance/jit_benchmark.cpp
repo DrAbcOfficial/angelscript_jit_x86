@@ -16,6 +16,11 @@ constexpr const char* kSystemCallScript =
     "int main() { int value = 0; int i = 0; int limit = 1000000; "
     "while (i < limit) { value = addOne(value); i++; } return value; }";
 
+constexpr const char* kSystemCall64Script =
+    "int main() { int64 value = 0; int i = 0; int limit = 1000000; "
+    "while (i < limit) { int64 next = addOne64(value); value = next; i++; } "
+    "return int(value); }";
+
 constexpr const char* kFunctionCallScript =
     "funcdef int Unary(int); int main() { Unary@ fn = @addOne; "
     "int value = 0; int i = 0; int limit = 1000000; "
@@ -37,6 +42,10 @@ constexpr const char* kLocalCopy64Script =
     "return int(destination); }";
 
 int AddOne(int value) {
+    return value + 1;
+}
+
+asINT64 AddOne64(asINT64 value) {
     return value + 1;
 }
 
@@ -107,6 +116,10 @@ int main() {
         return 1;
     if (jitEngine->RegisterGlobalFunction("int addOne(int)", asFUNCTION(AddOne), asCALL_CDECL) < 0)
         return 1;
+    if (interpreter->RegisterGlobalFunction("int64 addOne64(int64)", asFUNCTION(AddOne64), asCALL_CDECL) < 0)
+        return 1;
+    if (jitEngine->RegisterGlobalFunction("int64 addOne64(int64)", asFUNCTION(AddOne64), asCALL_CDECL) < 0)
+        return 1;
 
     asIScriptFunction* interpreterFunction = Build(interpreter, "interpreter", kIntegerScript);
     asIScriptFunction* jitFunction = Build(jitEngine, "jit", kIntegerScript);
@@ -135,6 +148,23 @@ int main() {
     double systemSpeedup = interpreterSystemMs / jitSystemMs;
     std::printf("system-call-loop(1e6): interpreter=%.3f ms jit=%.3f ms speedup=%.2fx\n",
                 interpreterSystemMs, jitSystemMs, systemSpeedup);
+
+    asIScriptFunction* interpreterSystem64Function =
+        Build(interpreter, "interpreter-system64", kSystemCall64Script);
+    asIScriptFunction* jitSystem64Function = Build(jitEngine, "jit-system64", kSystemCall64Script);
+    if (!interpreterSystem64Function || !jitSystem64Function ||
+        !HasOpcode(jitSystem64Function, asBC_PshV8) ||
+        !HasOpcode(jitSystem64Function, asBC_CpyRtoV8))
+        return 1;
+
+    asDWORD interpreterSystem64Result = 0;
+    asDWORD jitSystem64Result = 0;
+    double interpreterSystem64Ms =
+        Run(interpreter, interpreterSystem64Function, &interpreterSystem64Result);
+    double jitSystem64Ms = Run(jitEngine, jitSystem64Function, &jitSystem64Result);
+    double system64Speedup = interpreterSystem64Ms / jitSystem64Ms;
+    std::printf("system-call64-loop(1e6): interpreter=%.3f ms jit=%.3f ms speedup=%.2fx\n",
+                interpreterSystem64Ms, jitSystem64Ms, system64Speedup);
 
     asIScriptFunction* interpreterFunctionCall =
         Build(interpreter, "interpreter-function", kFunctionCallScript);
@@ -199,11 +229,13 @@ int main() {
 
     return interpreterMs > 0.0 && jitMs > 0.0 &&
                    interpreterSystemMs > 0.0 && jitSystemMs > 0.0 &&
+                   interpreterSystem64Ms > 0.0 && jitSystem64Ms > 0.0 &&
                    interpreterFunctionMs > 0.0 && jitFunctionMs > 0.0 &&
                    interpreterImportedMs > 0.0 && jitImportedMs > 0.0 &&
                    interpreterLocalCopyMs > 0.0 && jitLocalCopyMs > 0.0 &&
                    interpreterLocalCopy64Ms > 0.0 && jitLocalCopy64Ms > 0.0 &&
                    interpreterResult == jitResult && interpreterSystemResult == jitSystemResult &&
+                   interpreterSystem64Result == jitSystem64Result &&
                    interpreterFunctionResult == jitFunctionResult &&
                    interpreterImportedResult == jitImportedResult &&
                    interpreterLocalCopyResult == jitLocalCopyResult &&
