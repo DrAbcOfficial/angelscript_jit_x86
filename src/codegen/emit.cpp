@@ -5,7 +5,6 @@
 #include <asmjit/x86.h>
 
 #include <cstddef>
-#include <unordered_map>
 #include <vector>
 
 namespace asjitx86 {
@@ -42,17 +41,48 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
     if (!bc || bcLen == 0) return asERROR;
 
     std::vector<EmitIns> ins;
-    std::unordered_map<uint32_t, size_t> indexOfOffset;
+    ins.reserve(bcLen);
+    std::vector<int> indexOfOffset(bcLen, -1);
     uint32_t off = 0;
     while (off < bcLen) {
         asEBCInstr op = static_cast<asEBCInstr>(bc[off] & 0xFF);
         int sz = BcSize(op);
         if (sz <= 0) return asERROR;
-        indexOfOffset[off] = ins.size();
+        indexOfOffset[off] = static_cast<int>(ins.size());
         ins.push_back(EmitIns{op, off, static_cast<uint32_t>(sz)});
         off += static_cast<uint32_t>(sz);
     }
     if (off != bcLen) return asERROR;
+
+    std::vector<uint8_t> needsLabel(ins.size(), 0);
+    for (size_t i = 0; i < ins.size(); i++) {
+        const EmitIns& in = ins[i];
+        const asDWORD* ip = bc + in.off;
+        if (in.op == asBC_JitEntry) {
+            needsLabel[i] = 1;
+            continue;
+        }
+        switch (in.op) {
+        case asBC_JMP:
+        case asBC_JZ:
+        case asBC_JNZ:
+        case asBC_JS:
+        case asBC_JNS:
+        case asBC_JP:
+        case asBC_JNP:
+        case asBC_JLowZ:
+        case asBC_JLowNZ: {
+            int64_t target = int64_t(in.off) + 2 + asBC_INTARG(ip);
+            if (target < 0 || target >= int64_t(bcLen)) return asERROR;
+            int targetIndex = indexOfOffset[static_cast<size_t>(target)];
+            if (targetIndex < 0) return asERROR;
+            needsLabel[static_cast<size_t>(targetIndex)] = 1;
+            break;
+        }
+        default:
+            break;
+        }
+    }
 
     CodeHolder code;
     Error err = code.init(runtime.environment(), runtime.cpu_features());
@@ -74,7 +104,10 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
 
     std::vector<Label> labels;
     labels.reserve(ins.size());
-    for (size_t i = 0; i < ins.size(); i++) labels.push_back(cc.new_label());
+    labels.resize(ins.size());
+    for (size_t i = 0; i < ins.size(); i++) {
+        if (needsLabel[i]) labels[i] = cc.new_label();
+    }
     Label exitLabel = cc.new_label();
 
     {
@@ -90,7 +123,7 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
     }
 
     for (size_t i = 0; i < ins.size(); i++) {
-        cc.bind(labels[i]);
+        if (needsLabel[i]) cc.bind(labels[i]);
         const EmitIns& in = ins[i];
         const asDWORD* ip = bc + in.off;
 
@@ -127,10 +160,11 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
         switch (in.op) {
         case asBC_JMP: {
             int64_t target = int64_t(in.off) + 2 + asBC_INTARG(ip);
-            auto it = indexOfOffset.find(static_cast<uint32_t>(target));
-            if (it == indexOfOffset.end()) return asERROR;
+            if (target < 0 || target >= int64_t(bcLen)) return asERROR;
+            int targetIndex = indexOfOffset[static_cast<size_t>(target)];
+            if (targetIndex < 0) return asERROR;
             storeProgramPointer(bc + target);
-            cc.jmp(labels[it->second]);
+            cc.jmp(labels[static_cast<size_t>(targetIndex)]);
             break;
         }
         case asBC_JZ:
@@ -142,22 +176,23 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
         case asBC_JLowZ:
         case asBC_JLowNZ: {
             int64_t target = int64_t(in.off) + 2 + asBC_INTARG(ip);
-            auto it = indexOfOffset.find(static_cast<uint32_t>(target));
-            if (it == indexOfOffset.end()) return asERROR;
+            if (target < 0 || target >= int64_t(bcLen)) return asERROR;
+            int targetIndex = indexOfOffset[static_cast<size_t>(target)];
+            if (targetIndex < 0) return asERROR;
             if (in.op == asBC_JLowZ || in.op == asBC_JLowNZ)
                 cc.cmp(x86::byte_ptr(regs, offsetof(asSVMRegisters, valueRegister)), 0);
             else
                 cc.cmp(x86::dword_ptr(regs, offsetof(asSVMRegisters, valueRegister)), 0);
             storeProgramPointer(bc + target);
             switch (in.op) {
-            case asBC_JZ:     cc.jz(labels[it->second]); break;
-            case asBC_JNZ:    cc.jnz(labels[it->second]); break;
-            case asBC_JS:     cc.js(labels[it->second]); break;
-            case asBC_JNS:    cc.jns(labels[it->second]); break;
-            case asBC_JP:     cc.jg(labels[it->second]); break;
-            case asBC_JNP:    cc.jle(labels[it->second]); break;
-            case asBC_JLowZ:  cc.jz(labels[it->second]); break;
-            case asBC_JLowNZ: cc.jnz(labels[it->second]); break;
+            case asBC_JZ:     cc.jz(labels[static_cast<size_t>(targetIndex)]); break;
+            case asBC_JNZ:    cc.jnz(labels[static_cast<size_t>(targetIndex)]); break;
+            case asBC_JS:     cc.js(labels[static_cast<size_t>(targetIndex)]); break;
+            case asBC_JNS:    cc.jns(labels[static_cast<size_t>(targetIndex)]); break;
+            case asBC_JP:     cc.jg(labels[static_cast<size_t>(targetIndex)]); break;
+            case asBC_JNP:    cc.jle(labels[static_cast<size_t>(targetIndex)]); break;
+            case asBC_JLowZ:  cc.jz(labels[static_cast<size_t>(targetIndex)]); break;
+            case asBC_JLowNZ: cc.jnz(labels[static_cast<size_t>(targetIndex)]); break;
             default: break;
             }
             storeProgramPointer(ip + in.size);
