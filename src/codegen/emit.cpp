@@ -284,7 +284,9 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
     if (!fnNode) return asERROR;
 
     x86::Gp regs = cc.new_gp32("regs");
+    x86::Gp jitArg = cc.new_gp32("jitArg");
     fnNode->set_arg(0, regs);
+    fnNode->set_arg(1, jitArg);
 
     const uint32_t ppOff = offsetof(asSVMRegisters, programPointer);
     const uint32_t fpOff = offsetof(asSVMRegisters, stackFramePointer);
@@ -302,11 +304,10 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
     Label exitLabel = cc.new_label();
 
     {
-        x86::Gp pp = cc.new_gp32("pp");
-        cc.mov(pp, x86::dword_ptr(regs, offsetof(asSVMRegisters, programPointer)));
+        asPWORD entryId = 1;
         for (size_t i = 0; i < ins.size(); i++) {
             if (ins[i].op == asBC_JitEntry) {
-                cc.cmp(pp, Imm(int64_t((intptr_t)(bc + ins[i].off))));
+                cc.cmp(jitArg, Imm(entryId++));
                 cc.je(labels[i]);
             }
         }
@@ -647,9 +648,10 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
     err = runtime.add(&fn, &code);
     if (err != kErrorOk) return asERROR;
 
+    asPWORD entryId = 1;
     for (size_t i = 0; i < ins.size(); i++) {
         if (ins[i].op == asBC_JitEntry)
-            *(asPWORD*)(bc + ins[i].off + 1) = asPWORD(bc + ins[i].off);
+            *(asPWORD*)(bc + ins[i].off + 1) = entryId++;
     }
 
     *out = fn;
