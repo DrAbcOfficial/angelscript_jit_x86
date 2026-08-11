@@ -1,6 +1,7 @@
 #include "as_jit_x86.h"
 #include "angelscript.h"
 #include "scriptarray.h"
+#include "scriptdictionary.h"
 #include "scriptstdstring.h"
 
 #include <algorithm>
@@ -602,6 +603,56 @@ int main()
 }
 )AS";
 
+const char* kDictionaryOps = R"AS(
+class DictBox
+{
+    int value;
+    DictBox(int input) { value = input; }
+}
+
+int main()
+{
+    dictionary values = {{"counter", int64(1)}, {"ratio", 1.5}, {"label", "seed"}};
+    DictBox box(7);
+    values.set("box", @box);
+    int sum = 0;
+    for (int i = 0; i < 100000; i++)
+    {
+        values.set("counter", int64(i));
+        int64 counter = 0;
+        if (values.get("counter", counter))
+            sum += int(counter & 0xFF);
+
+        values["indexed"] = int64(i + 3);
+        sum += int(values["indexed"]) & 7;
+
+        values.set("ratio", double(i & 15) + 0.5);
+        double ratio = 0.0;
+        if (values.get("ratio", ratio))
+            sum += int(ratio);
+
+        DictBox@ found;
+        if (values.get("box", @found) && found !is null)
+            sum += found.value;
+        if (values.exists("label"))
+            sum++;
+
+        if ((i & 31) == 0)
+        {
+            values.set("temporary", i);
+            if (values.delete("temporary"))
+                sum++;
+        }
+    }
+
+    array<string>@ keys = values.getKeys();
+    dictionary copy = values;
+    copy.deleteAll();
+    if (copy.isEmpty()) sum++;
+    return sum + int(keys.length()) + int(values.getSize());
+}
+)AS";
+
 const char* kGlobalsNs = R"AS(
 enum Direction
 {
@@ -890,6 +941,7 @@ const CaseDef kCases[] = {
     {"handles-refs", kHandlesRefs, nullptr, nullptr, false},
     {"string-ops", kStringOps, nullptr, nullptr, false},
     {"array-ops", kArrayOps, nullptr, nullptr, false},
+    {"dictionary-ops", kDictionaryOps, nullptr, nullptr, false},
     {"globals-ns", kGlobalsNs, nullptr, nullptr, false},
     {"types-mixed", kTypesMixed, nullptr, nullptr, false},
     {"sys-calls", kSysCalls, nullptr, nullptr, false},
@@ -945,6 +997,7 @@ void RaiseError() {
 bool RegisterAll(asIScriptEngine* engine) {
     RegisterStdString(engine);
     RegisterScriptArray(engine, true);
+    RegisterScriptDictionary(engine);
     if (engine->RegisterGlobalFunction("string itos(int)", asFUNCTION(Itos), asCALL_CDECL) < 0) return false;
     if (engine->RegisterGlobalFunction("string ftos(float)", asFUNCTION(Ftos), asCALL_CDECL) < 0) return false;
     if (engine->RegisterGlobalFunction("string dtos(double)", asFUNCTION(Dtos), asCALL_CDECL) < 0) return false;

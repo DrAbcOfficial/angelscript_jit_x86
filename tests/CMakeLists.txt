@@ -44,6 +44,7 @@ endif()
 add_executable(asjitx86_showcase
     performance/jit_showcase.cpp
     ${CMAKE_SOURCE_DIR}/third_party/angelscript/sdk/add_on/scriptarray/scriptarray.cpp
+    ${CMAKE_SOURCE_DIR}/third_party/angelscript/sdk/add_on/scriptdictionary/scriptdictionary.cpp
     ${CMAKE_SOURCE_DIR}/third_party/angelscript/sdk/add_on/scriptstdstring/scriptstdstring.cpp
 )
 
@@ -52,6 +53,7 @@ target_include_directories(asjitx86_showcase PRIVATE
     ${CMAKE_SOURCE_DIR}/third_party/angelscript/sdk/angelscript/include
     ${CMAKE_SOURCE_DIR}/third_party/angelscript/sdk/add_on
     ${CMAKE_SOURCE_DIR}/third_party/angelscript/sdk/add_on/scriptarray
+    ${CMAKE_SOURCE_DIR}/third_party/angelscript/sdk/add_on/scriptdictionary
     ${CMAKE_SOURCE_DIR}/third_party/angelscript/sdk/add_on/scriptstdstring
 )
 
