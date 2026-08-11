@@ -1,6 +1,7 @@
 #include "bytecode/helpers/runtime_helpers.h"
 #include "bytecode/helpers/helper_context.h"
 
+#include "as_objecttype.h"
 #include "as_scriptengine.h"
 #include "as_scriptobject.h"
 #include "as_texts.h"
@@ -47,6 +48,24 @@ void PrepareScriptCall(asCContext* ctx, asCScriptFunction* function) {
         if (ctx->m_lineCallback) ctx->CallLineCallback();
         if (ctx->m_doSuspend) ctx->m_status = asEXECUTION_SUSPENDED;
     }
+}
+
+asCScriptFunction* ResolveScriptMethod(asCScriptObject* object,
+                                       asCScriptFunction* function) {
+    auto* objectType = static_cast<asCObjectType*>(object->GetObjectType());
+    if (function->funcType == asFUNC_VIRTUAL)
+        return objectType->virtualFunctionTable[function->vfTableIdx];
+
+    assert(function->funcType == asFUNC_INTERFACE);
+    asUINT interfaceOffset = 0;
+    for (asUINT index = 0; index < objectType->interfaces.GetLength(); index++) {
+        if (objectType->interfaces[index] == function->objectType) {
+            interfaceOffset = objectType->interfaceVFTOffsets[index];
+            return objectType->virtualFunctionTable[
+                function->vfTableIdx + interfaceOffset];
+        }
+    }
+    return nullptr;
 }
 
 }
@@ -157,11 +176,24 @@ int BcCallBnd(asSVMRegisters* regs, const asDWORD* bc) {
 
 int BcCallIntf(asSVMRegisters* regs, const asDWORD* bc) {
     auto* ctx = Ctx(regs);
-    asUINT callerCallStackLength = ctx->m_callStack.GetLength();
-    int i = asBC_INTARG(bc);
-    regs->programPointer = NextBc(bc, 2);
-    ctx->CallInterfaceMethod(ctx->m_engine->GetScriptFunction(i));
-    return ResumeJitCallChain(regs, callerCallStackLength);
+    const asDWORD* nextBc = NextBc(bc, 2);
+    auto* object = *reinterpret_cast<asCScriptObject**>(regs->stackPointer);
+    if (!object) {
+        regs->programPointer = const_cast<asDWORD*>(nextBc);
+        ctx->m_needToCleanupArgs = true;
+        ctx->SetInternalException(TXT_NULL_POINTER_ACCESS);
+        return JITBC_EXIT;
+    }
+
+    auto* function = ctx->m_engine->GetScriptFunction(asBC_INTARG(bc));
+    asCScriptFunction* realFunction = ResolveScriptMethod(object, function);
+    if (!realFunction) {
+        regs->programPointer = const_cast<asDWORD*>(nextBc);
+        ctx->m_needToCleanupArgs = true;
+        ctx->SetInternalException(TXT_NULL_POINTER_ACCESS);
+        return JITBC_EXIT;
+    }
+    return CallScriptFunction(regs, realFunction, nextBc);
 }
 
 int BcCallPtr(asSVMRegisters* regs, const asDWORD* bc) {
@@ -216,7 +248,7 @@ int BcCallPtr(asSVMRegisters* regs, const asDWORD* bc) {
         assert(false);
     }
     if (scriptCall)
-        return ResumeJitCallChain(regs, callerCallStackLength, 1);
+        return ResumeJitCallChain(regs, callerCallStackLength);
     return systemCall && ctx->m_status == asEXECUTION_ACTIVE ? JITBC_CONTINUE : JITBC_EXIT;
 }
 

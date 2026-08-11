@@ -137,6 +137,31 @@ void FastRefCopyScriptObject(void** destination, void* source) {
     *destination = source;
 }
 
+void FastMoveScriptObject(void** destination, void** source) {
+    auto* current = static_cast<asCScriptObject*>(*destination);
+    if (current) current->Release();
+    *destination = *source;
+    *source = nullptr;
+}
+
+void FastReleaseScriptFunction(void* function) {
+    static_cast<asCScriptFunction*>(function)->Release();
+}
+
+void FastRefCopyScriptFunction(void** destination, void* source) {
+    auto* current = static_cast<asCScriptFunction*>(*destination);
+    if (current) current->Release();
+    if (source) static_cast<asCScriptFunction*>(source)->AddRef();
+    *destination = source;
+}
+
+void FastMoveScriptFunction(void** destination, void** source) {
+    auto* current = static_cast<asCScriptFunction*>(*destination);
+    if (current) current->Release();
+    *destination = *source;
+    *source = nullptr;
+}
+
 bool IsConditionalBranch(asEBCInstr op) {
     switch (op) {
     case asBC_JZ:
@@ -350,6 +375,41 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
         }
     }
 
+    std::vector<uint8_t> refCopyFusionSpan(ins.size(), 0);
+    std::vector<uint8_t> refCopyFusionSkip(ins.size(), 0);
+    for (size_t i = 0; i + 2 < ins.size(); i++) {
+        if (ins[i].op != asBC_PshVPtr ||
+            ins[i + 1].op != asBC_RefCpyV ||
+            needsLabel[i + 1])
+            continue;
+
+        const asDWORD* copy = bc + ins[i + 1].off;
+        auto* copyType = reinterpret_cast<asCObjectType*>(asBC_PTRARG(copy));
+        if (!(copyType->flags & (asOBJ_SCRIPT_OBJECT | asOBJ_FUNCDEF)))
+            continue;
+
+        unsigned span = 0;
+        if (ins[i + 2].op == asBC_PopPtr && !needsLabel[i + 2]) {
+            span = 3;
+        } else if (i + 3 < ins.size() &&
+                   ins[i + 2].op == asBC_FREE &&
+                   ins[i + 3].op == asBC_PopPtr &&
+                   !needsLabel[i + 2] && !needsLabel[i + 3]) {
+            const asDWORD* push = bc + ins[i].off;
+            const asDWORD* release = bc + ins[i + 2].off;
+            if (asBC_SWORDARG0(push) != asBC_SWORDARG0(release) ||
+                asBC_SWORDARG0(push) == asBC_SWORDARG0(copy) ||
+                asBC_PTRARG(copy) != asBC_PTRARG(release))
+                continue;
+            span = 4;
+        }
+        if (!span) continue;
+        refCopyFusionSpan[i] = static_cast<uint8_t>(span);
+        for (unsigned skipped = 1; skipped < span; skipped++)
+            refCopyFusionSkip[i + skipped] = 1;
+        i += span - 1;
+    }
+
     auto valueRegisterDeadFrom = [&](size_t start) {
         std::vector<uint8_t> visited(ins.size(), 0);
         size_t current = start;
@@ -449,6 +509,7 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
 
     for (size_t i = 0; i < ins.size(); i++) {
         if (i > 0 && fusedCmpBranch[i - 1]) continue;
+        if (refCopyFusionSkip[i]) continue;
         if (needsLabel[i]) cc.bind(labels[i]);
         const EmitIns& in = ins[i];
         const asDWORD* ip = bc + in.off;
@@ -544,6 +605,53 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
             break;
         }
         case asBC_PshVPtr: {
+            if (refCopyFusionSpan[i]) {
+                const unsigned span = refCopyFusionSpan[i];
+                const asDWORD* copyIp = bc + ins[i + 1].off;
+                auto* objectType = reinterpret_cast<asCObjectType*>(
+                    asBC_PTRARG(copyIp));
+                const bool functionObject =
+                    (objectType->flags & asOBJ_FUNCDEF) != 0;
+                const int sourceOffset = asBC_SWORDARG0(ip);
+                const int destinationOffset = asBC_SWORDARG0(copyIp);
+                x86::Gp sourceSlot = cc.new_gp32("sourceSlot");
+                x86::Gp destination = cc.new_gp32("destination");
+                cc.lea(sourceSlot,
+                       x86::dword_ptr(fp, -sourceOffset * 4));
+                cc.lea(destination,
+                       x86::dword_ptr(fp, -destinationOffset * 4));
+                cc.mov(x86::dword_ptr(regs, ppOff),
+                       Imm(int64_t((intptr_t)copyIp)));
+
+                InvokeNode* inv = nullptr;
+                if (span == 4) {
+                    Error invErr = cc.invoke(
+                        Out<InvokeNode*>(inv),
+                        Imm(int64_t((intptr_t)(functionObject ?
+                            &FastMoveScriptFunction : &FastMoveScriptObject))),
+                        FuncSignature::build<void, void**, void**>());
+                    if (invErr != kErrorOk) return asERROR;
+                    inv->set_arg(0, destination);
+                    inv->set_arg(1, sourceSlot);
+                } else {
+                    x86::Gp source = cc.new_gp32("source");
+                    cc.mov(source, x86::dword_ptr(sourceSlot));
+                    Error invErr = cc.invoke(
+                        Out<InvokeNode*>(inv),
+                        Imm(int64_t((intptr_t)(functionObject ?
+                            &FastRefCopyScriptFunction :
+                            &FastRefCopyScriptObject))),
+                        FuncSignature::build<void, void**, void*>());
+                    if (invErr != kErrorOk) return asERROR;
+                    inv->set_arg(0, destination);
+                    inv->set_arg(1, source);
+                }
+                const EmitIns& last = ins[i + span - 1];
+                cc.mov(x86::dword_ptr(regs, ppOff),
+                       Imm(int64_t((intptr_t)(bc + last.off + last.size))));
+                break;
+            }
+
             int offset = asBC_SWORDARG0(ip);
             x86::Gp sp = cc.new_gp32("sp");
             x86::Gp value = cc.new_gp32("value");
@@ -818,7 +926,8 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
         case asBC_FREE: {
             auto* objectType = reinterpret_cast<asCObjectType*>(asBC_PTRARG(ip));
             const bool scriptObject = (objectType->flags & asOBJ_SCRIPT_OBJECT) != 0;
-            if (!scriptObject) {
+            const bool functionObject = (objectType->flags & asOBJ_FUNCDEF) != 0;
+            if (!scriptObject && !functionObject) {
                 if (!emitHelperCall()) return asERROR;
                 break;
             }
@@ -834,7 +943,9 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
             cc.mov(x86::dword_ptr(regs, ppOff),
                    Imm(int64_t((intptr_t)ip)));
             Error invErr = cc.invoke(Out<InvokeNode*>(inv),
-                                     Imm(int64_t((intptr_t)&FastReleaseScriptObject)),
+                                     Imm(int64_t((intptr_t)(functionObject ?
+                                         &FastReleaseScriptFunction :
+                                         &FastReleaseScriptObject))),
                                      FuncSignature::build<void, void*>());
             if (invErr != kErrorOk) return asERROR;
             inv->set_arg(0, object);
@@ -881,7 +992,11 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
         case asBC_REFCPY:
         case asBC_RefCpyV: {
             auto* objectType = reinterpret_cast<asCObjectType*>(asBC_PTRARG(ip));
-            if (!(objectType->flags & asOBJ_SCRIPT_OBJECT)) {
+            const bool scriptObject =
+                (objectType->flags & asOBJ_SCRIPT_OBJECT) != 0;
+            const bool functionObject =
+                (objectType->flags & asOBJ_FUNCDEF) != 0;
+            if (!scriptObject && !functionObject) {
                 if (!emitHelperCall()) return asERROR;
                 break;
             }
@@ -904,7 +1019,9 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
 
             InvokeNode* inv = nullptr;
             Error invErr = cc.invoke(Out<InvokeNode*>(inv),
-                                     Imm(int64_t((intptr_t)&FastRefCopyScriptObject)),
+                                     Imm(int64_t((intptr_t)(functionObject ?
+                                         &FastRefCopyScriptFunction :
+                                         &FastRefCopyScriptObject))),
                                      FuncSignature::build<void, void**, void*>());
             if (invErr != kErrorOk) return asERROR;
             inv->set_arg(0, destination);
