@@ -27,32 +27,11 @@ int AllocScriptObject(asSVMRegisters* regs, asCObjectType* objectType,
     return CallScriptFunction(regs, constructor, nextBc);
 }
 
-int CallScriptFactory(asSVMRegisters* regs, asCScriptFunction* factory,
-                      asCObjectType* objectType,
-                      asCScriptFunction* constructor, const asDWORD* nextBc) {
+void* CreateScriptObject(asSVMRegisters* regs, asCObjectType* objectType) {
     auto* ctx = Ctx(regs);
-    if (regs->doProcessSuspend ||
-        ctx->m_callStack.GetLength() / CALLSTACK_FRAME_SIZE >=
-            kMaxDirectJitCallDepth ||
-        !constructor->scriptData || !constructor->scriptData->jitFunction) {
-        return CallScriptFunction(regs, factory, nextBc);
-    }
-
-    asDWORD* callerStackPointer = regs->stackPointer;
-    asDWORD* memory = static_cast<asDWORD*>(ctx->m_engine->CallAlloc(objectType));
+    void* memory = ctx->m_engine->CallAlloc(objectType);
     ScriptObject_Construct(objectType, reinterpret_cast<asCScriptObject*>(memory));
-    regs->stackPointer -= AS_PTR_SIZE;
-    *reinterpret_cast<asPWORD*>(regs->stackPointer) =
-        reinterpret_cast<asPWORD>(memory);
-
-    int result = CallScriptFunction(regs, constructor, nextBc);
-    if (result == JITBC_CONTINUE) {
-        regs->stackPointer =
-            callerStackPointer + factory->GetSpaceNeededForArguments();
-        regs->objectRegister = memory;
-        regs->objectType = nullptr;
-    }
-    return result;
+    return memory;
 }
 
 int BcAlloc(asSVMRegisters* regs, const asDWORD* bc) {

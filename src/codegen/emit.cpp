@@ -670,23 +670,106 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
             auto* target = engine->scriptFunctions[asBC_INTARG(ip)];
             SimpleFactoryTarget factoryTarget;
             if (DecodeSimpleFactory(engine, target, factoryTarget)) {
+                x86::Gp factorySp = cc.new_gp32("factorySp");
+                x86::Gp object = cc.new_gp32("factoryObject");
+                x86::Gp constructorFrame = cc.new_gp32("constructorFrame");
+                x86::Gp constructorValue = cc.new_gp32("constructorValue");
+                loadSp(factorySp);
+
                 InvokeNode* inv = nullptr;
                 Error invErr = cc.invoke(
                     Out<InvokeNode*>(inv),
-                    Imm(int64_t((intptr_t)&detail::CallScriptFactory)),
-                    FuncSignature::build<int, asSVMRegisters*, asCScriptFunction*,
-                                         asCObjectType*, asCScriptFunction*,
-                                         const asDWORD*>());
+                    Imm(int64_t((intptr_t)&detail::CreateScriptObject)),
+                    FuncSignature::build<void*, asSVMRegisters*,
+                                         asCObjectType*>());
                 if (invErr != kErrorOk) return asERROR;
-                x86::Gp result = cc.new_gp32("result");
                 inv->set_arg(0, regs);
-                inv->set_arg(1, Imm(int64_t((intptr_t)target)));
-                inv->set_arg(2, Imm(int64_t((intptr_t)factoryTarget.objectType)));
-                inv->set_arg(3, Imm(int64_t((intptr_t)factoryTarget.constructor)));
-                inv->set_arg(4, Imm(int64_t((intptr_t)(ip + in.size))));
-                inv->set_ret(0, result);
-                cc.test(result, result);
-                cc.jnz(exitLabel);
+                inv->set_arg(1, Imm(int64_t((intptr_t)factoryTarget.objectType)));
+                inv->set_ret(0, object);
+
+                cc.mov(constructorFrame, factorySp);
+                cc.sub(constructorFrame, AS_PTR_SIZE * 4);
+                cc.mov(x86::dword_ptr(constructorFrame), object);
+
+                asUINT constructorLength = 0;
+                asDWORD* constructorBytecode =
+                    factoryTarget.constructor->GetByteCode(&constructorLength);
+                for (asUINT constructorOffset = 0;
+                     constructorOffset < constructorLength;) {
+                    const asDWORD* constructorIp =
+                        constructorBytecode + constructorOffset;
+                    asEBCInstr constructorOp = static_cast<asEBCInstr>(
+                        *constructorIp & 0xFF);
+                    if (constructorOp == asBC_RET) break;
+                    switch (constructorOp) {
+                    case asBC_JitEntry:
+                        break;
+                    case asBC_SetV4: {
+                        const int destination = asBC_SWORDARG0(constructorIp);
+                        cc.mov(x86::dword_ptr(constructorFrame,
+                                              -destination * 4),
+                               Imm(int64_t(static_cast<int32_t>(
+                                   asBC_DWORDARG(constructorIp)))));
+                        break;
+                    }
+                    case asBC_LoadThisR:
+                        cc.mov(constructorValue,
+                               x86::dword_ptr(constructorFrame));
+                        cc.add(constructorValue, asBC_SWORDARG0(constructorIp));
+                        break;
+                    case asBC_WRTV4: {
+                        const int source = asBC_SWORDARG0(constructorIp);
+                        x86::Gp value = cc.new_gp32("constructorStore");
+                        cc.mov(value, x86::dword_ptr(constructorFrame,
+                                                    -source * 4));
+                        cc.mov(x86::dword_ptr(constructorValue), value);
+                        break;
+                    }
+                    case asBC_LoadRObjR: {
+                        const int source = asBC_SWORDARG0(constructorIp);
+                        cc.mov(constructorValue,
+                               x86::dword_ptr(constructorFrame,
+                                              -source * 4));
+                        cc.add(constructorValue,
+                               asBC_SWORDARG1(constructorIp));
+                        break;
+                    }
+                    case asBC_RDR4: {
+                        const int destination = asBC_SWORDARG0(constructorIp);
+                        x86::Gp value = cc.new_gp32("constructorLoad");
+                        cc.mov(value, x86::dword_ptr(constructorValue));
+                        cc.mov(x86::dword_ptr(constructorFrame,
+                                              -destination * 4), value);
+                        break;
+                    }
+                    case asBC_ADDIi: {
+                        const int destination = asBC_SWORDARG0(constructorIp);
+                        const int source = asBC_SWORDARG1(constructorIp);
+                        x86::Gp value = cc.new_gp32("constructorAdd");
+                        cc.mov(value, x86::dword_ptr(constructorFrame,
+                                                    -source * 4));
+                        cc.add(value, asBC_INTARG(constructorIp + 1));
+                        cc.mov(x86::dword_ptr(constructorFrame,
+                                              -destination * 4), value);
+                        break;
+                    }
+                    default:
+                        return asERROR;
+                    }
+                    constructorOffset += BcSize(constructorOp);
+                }
+
+                const int argumentBytes =
+                    target->GetSpaceNeededForArguments() * 4;
+                if (argumentBytes) cc.add(factorySp, argumentBytes);
+                storeSp(factorySp);
+                cc.mov(x86::dword_ptr(
+                           regs, offsetof(asSVMRegisters, objectRegister)),
+                       object);
+                cc.mov(x86::dword_ptr(
+                           regs, offsetof(asSVMRegisters, objectType)), 0);
+                cc.mov(x86::dword_ptr(regs, ppOff),
+                       Imm(int64_t((intptr_t)(ip + in.size))));
                 break;
             }
 
