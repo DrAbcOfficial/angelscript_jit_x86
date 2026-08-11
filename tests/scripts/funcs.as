@@ -6,6 +6,12 @@ int fib(int n)
     return fib(n - 1) + fib(n - 2);
 }
 
+int deepRecursion(int n)
+{
+    if (n == 0) return 0;
+    return 1 + deepRecursion(n - 1);
+}
+
 int sum3(int a, int b, int c)
 {
     return a + b + c;
@@ -35,6 +41,7 @@ int main()
 {
     g_out += itos(fib(10)) + "\n";
     g_out += itos(fib(20)) + "\n";
+    g_out += itos(deepRecursion(80)) + "\n";
     g_out += itos(sum3(1, 2, 3)) + "\n";
     g_out += ftos(avgf(1.0f, 3.0f)) + "\n";
     g_out += dtos(avgd(1.0, 3.0)) + "\n";

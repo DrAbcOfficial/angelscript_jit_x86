@@ -2,6 +2,9 @@
 #include "bytecode/bc_helpers.h"
 #include "bytecode/bc_info.h"
 
+#include "as_objecttype.h"
+#include "as_scriptobject.h"
+
 #include <asmjit/x86.h>
 
 #include <cstddef>
@@ -16,6 +19,19 @@ struct EmitIns {
     uint32_t   off;
     uint32_t   size;
 };
+
+// Script classes all use these concrete behaviours; bypassing the generic
+// system-call dispatcher preserves their reference-counting semantics.
+void FastReleaseScriptObject(void* object) {
+    static_cast<asCScriptObject*>(object)->Release();
+}
+
+void FastRefCopyScriptObject(void** destination, void* source) {
+    auto* current = static_cast<asCScriptObject*>(*destination);
+    if (current) current->Release();
+    if (source) static_cast<asCScriptObject*>(source)->AddRef();
+    *destination = source;
+}
 
 bool IsConditionalBranch(asEBCInstr op) {
     switch (op) {
@@ -299,6 +315,7 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
 
     const uint32_t fpOff = offsetof(asSVMRegisters, stackFramePointer);
     const uint32_t spOff = offsetof(asSVMRegisters, stackPointer);
+    const uint32_t ppOff = offsetof(asSVMRegisters, programPointer);
 
     x86::Gp fp = cc.new_gp32("fp");
     cc.mov(fp, x86::dword_ptr(regs, fpOff));
@@ -418,6 +435,21 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
             } else if (!emitHelperCall()) return asERROR;
             break;
         }
+        case asBC_PshVPtr: {
+            int offset = asBC_SWORDARG0(ip);
+            x86::Gp sp = cc.new_gp32("sp");
+            x86::Gp value = cc.new_gp32("value");
+            loadSp(sp);
+            cc.sub(sp, AS_PTR_SIZE * 4);
+            loadVar(offset, value);
+            cc.mov(x86::dword_ptr(sp), value);
+            storeSp(sp);
+            // Object cleanup can reuse the active context, so preserve the VM's
+            // observable position just as the original bytecode helper does.
+            cc.mov(x86::dword_ptr(regs, ppOff),
+                   Imm(int64_t((intptr_t)(ip + 1))));
+            break;
+        }
         case asBC_PshV8: {
             if (kInlineCallV8) {
                 int source = asBC_SWORDARG0(ip);
@@ -526,6 +558,35 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
             } else if (!emitHelperCall()) return asERROR;
             break;
         }
+        case asBC_FREE: {
+            auto* objectType = reinterpret_cast<asCObjectType*>(asBC_PTRARG(ip));
+            const bool scriptObject = (objectType->flags & asOBJ_SCRIPT_OBJECT) != 0;
+            if (!scriptObject) {
+                if (!emitHelperCall()) return asERROR;
+                break;
+            }
+
+            int offset = asBC_SWORDARG0(ip);
+            x86::Gp object = cc.new_gp32("object");
+            Label done = cc.new_label();
+            loadVar(offset, object);
+            cc.test(object, object);
+            cc.jz(done);
+
+            InvokeNode* inv = nullptr;
+            cc.mov(x86::dword_ptr(regs, ppOff),
+                   Imm(int64_t((intptr_t)ip)));
+            Error invErr = cc.invoke(Out<InvokeNode*>(inv),
+                                     Imm(int64_t((intptr_t)&FastReleaseScriptObject)),
+                                     FuncSignature::build<void, void*>());
+            if (invErr != kErrorOk) return asERROR;
+            inv->set_arg(0, object);
+            cc.mov(x86::dword_ptr(fp, -offset * 4), 0);
+            cc.bind(done);
+            cc.mov(x86::dword_ptr(regs, ppOff),
+                   Imm(int64_t((intptr_t)(ip + in.size))));
+            break;
+        }
         case asBC_STOREOBJ: {
             int destination = asBC_SWORDARG0(ip);
             x86::Gp object = cc.new_gp32("object");
@@ -549,6 +610,41 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
             cc.mov(x86::dword_ptr(slot), object);
             if (in.op == asBC_GETOBJ)
                 cc.mov(x86::dword_ptr(fp, offset), 0);
+            break;
+        }
+        case asBC_REFCPY:
+        case asBC_RefCpyV: {
+            auto* objectType = reinterpret_cast<asCObjectType*>(asBC_PTRARG(ip));
+            if (!(objectType->flags & asOBJ_SCRIPT_OBJECT)) {
+                if (!emitHelperCall()) return asERROR;
+                break;
+            }
+
+            x86::Gp sp = cc.new_gp32("sp");
+            x86::Gp destination = cc.new_gp32("destination");
+            x86::Gp source = cc.new_gp32("source");
+            loadSp(sp);
+            if (in.op == asBC_REFCPY) {
+                cc.mov(destination, x86::dword_ptr(sp));
+                cc.add(sp, AS_PTR_SIZE * 4);
+                storeSp(sp);
+            } else {
+                cc.lea(destination,
+                       x86::dword_ptr(fp, -asBC_SWORDARG0(ip) * 4));
+            }
+            cc.mov(source, x86::dword_ptr(sp));
+            cc.mov(x86::dword_ptr(regs, ppOff),
+                   Imm(int64_t((intptr_t)ip)));
+
+            InvokeNode* inv = nullptr;
+            Error invErr = cc.invoke(Out<InvokeNode*>(inv),
+                                     Imm(int64_t((intptr_t)&FastRefCopyScriptObject)),
+                                     FuncSignature::build<void, void**, void*>());
+            if (invErr != kErrorOk) return asERROR;
+            inv->set_arg(0, destination);
+            inv->set_arg(1, source);
+            cc.mov(x86::dword_ptr(regs, ppOff),
+                   Imm(int64_t((intptr_t)(ip + in.size))));
             break;
         }
         case asBC_CpyVtoV8: {

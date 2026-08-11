@@ -13,17 +13,20 @@ namespace asjitx86::detail {
 
 namespace {
 
-thread_local bool s_jitCallChainActive = false;
+thread_local unsigned s_jitCallChainDepth = 0;
 
 class JitCallChainGuard {
 public:
-    JitCallChainGuard() { s_jitCallChainActive = true; }
-    ~JitCallChainGuard() { s_jitCallChainActive = false; }
+    JitCallChainGuard() { s_jitCallChainDepth++; }
+    ~JitCallChainGuard() { s_jitCallChainDepth--; }
 };
 
-int ResumeJitCallChain(asSVMRegisters* regs, asUINT callerCallStackLength) {
+}
+
+int ResumeJitCallChain(asSVMRegisters* regs, asUINT callerCallStackLength,
+                       unsigned maxDirectDepth) {
     auto* ctx = Ctx(regs);
-    if (s_jitCallChainActive) return JITBC_EXIT;
+    if (s_jitCallChainDepth >= maxDirectDepth) return JITBC_EXIT;
 
     JitCallChainGuard guard;
     while (ctx->m_status == asEXECUTION_ACTIVE &&
@@ -42,8 +45,6 @@ int ResumeJitCallChain(asSVMRegisters* regs, asUINT callerCallStackLength) {
     return ctx->m_status == asEXECUTION_ACTIVE &&
            ctx->m_callStack.GetLength() == callerCallStackLength ?
            JITBC_CONTINUE : JITBC_EXIT;
-}
-
 }
 
 int BcJitEntry(asSVMRegisters* regs, const asDWORD* bc) {
@@ -180,7 +181,7 @@ int BcCallPtr(asSVMRegisters* regs, const asDWORD* bc) {
         assert(false);
     }
     if (scriptCall)
-        return ResumeJitCallChain(regs, callerCallStackLength);
+        return ResumeJitCallChain(regs, callerCallStackLength, 1);
     return systemCall && ctx->m_status == asEXECUTION_ACTIVE ? JITBC_CONTINUE : JITBC_EXIT;
 }
 

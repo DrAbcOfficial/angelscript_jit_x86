@@ -4,6 +4,10 @@
 
 namespace asjitx86::detail {
 
+inline constexpr unsigned kMaxDirectJitCallDepth = 32;
+
+int ResumeJitCallChain(asSVMRegisters* regs, asUINT callerCallStackLength,
+                       unsigned maxDirectDepth = kMaxDirectJitCallDepth);
 int BcJitEntry(asSVMRegisters* regs, const asDWORD* bc);
 int BcCall(asSVMRegisters* regs, const asDWORD* bc);
 int BcRet(asSVMRegisters* regs, const asDWORD* bc);

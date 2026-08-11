@@ -1,5 +1,6 @@
 #include "bytecode/helpers/object_helpers.h"
 #include "bytecode/helpers/helper_context.h"
+#include "bytecode/helpers/runtime_helpers.h"
 
 #include "as_scriptengine.h"
 #include "as_scriptobject.h"
@@ -13,6 +14,7 @@ namespace asjitx86::detail {
 
 int BcAlloc(asSVMRegisters* regs, const asDWORD* bc) {
     auto* ctx = Ctx(regs);
+    asUINT callerCallStackLength = ctx->m_callStack.GetLength();
     asCObjectType* objType = (asCObjectType*)asBC_PTRARG(bc);
     int func = asBC_INTARG(bc + AS_PTR_SIZE);
     if (objType->flags & asOBJ_SCRIPT_OBJECT) {
@@ -25,7 +27,7 @@ int BcAlloc(asSVMRegisters* regs, const asDWORD* bc) {
         *(asPWORD*)regs->stackPointer = (asPWORD)mem;
         regs->programPointer += 2 + AS_PTR_SIZE;
         ctx->CallScriptFunction(f);
-        return JITBC_EXIT;
+        return ResumeJitCallChain(regs, callerCallStackLength);
     }
     asDWORD* mem = (asDWORD*)ctx->m_engine->CallAlloc(objType);
     if (func) {
