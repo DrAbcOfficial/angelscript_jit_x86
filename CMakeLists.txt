@@ -97,3 +97,9 @@ install(TARGETS as_jit_x86
 )
 
 install(FILES include/as_jit_x86.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+
+install(FILES
+    LICENSE
+    THIRD_PARTY_LICENSES.md
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/as_jit_x86
+)
