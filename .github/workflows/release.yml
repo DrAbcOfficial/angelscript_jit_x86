@@ -1,0 +1,251 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    name: Windows x86
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Configure shared library
+        run: >-
+          cmake -S . -B build/shared -A Win32
+          -DASJITX86_BUILD_SHARED=ON
+          -DASJITX86_BUILD_TESTS=ON
+
+      - name: Build shared library
+        run: cmake --build build/shared --config RelWithDebInfo --parallel
+
+      - name: Test shared library
+        run: ctest --test-dir build/shared -C RelWithDebInfo --output-on-failure
+
+      - name: Install shared library
+        run: >-
+          cmake --install build/shared
+          --config RelWithDebInfo
+          --prefix package/runtime/windows-x86/shared
+
+      - name: Configure static library
+        run: >-
+          cmake -S . -B build/static -A Win32
+          -DASJITX86_BUILD_SHARED=OFF
+          -DASJITX86_BUILD_TESTS=ON
+
+      - name: Build static library
+        run: cmake --build build/static --config RelWithDebInfo --parallel
+
+      - name: Test static library
+        run: ctest --test-dir build/static -C RelWithDebInfo --output-on-failure
+
+      - name: Install static library
+        run: >-
+          cmake --install build/static
+          --config RelWithDebInfo
+          --prefix package/runtime/windows-x86/static
+
+      - name: Collect Windows symbols
+        shell: pwsh
+        run: |
+          $symbolRoot = Join-Path $PWD "package/symbols/windows-x86"
+          $symbols = @{
+              "shared" = "build/shared/RelWithDebInfo/as_jit_x86.pdb"
+              "static" = "build/static/RelWithDebInfo/as_jit_x86.pdb"
+          }
+
+          foreach ($kind in $symbols.Keys) {
+              $source = $symbols[$kind]
+              if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+                  throw "Missing PDB file: $source"
+              }
+
+              $destination = Join-Path $symbolRoot $kind
+              New-Item -ItemType Directory -Force -Path $destination | Out-Null
+              Copy-Item -LiteralPath $source -Destination $destination
+          }
+
+      - name: Upload Windows files
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: runtime-windows
+          path: package/runtime
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Upload Windows symbols
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: symbols-windows
+          path: package/symbols
+          if-no-files-found: error
+          retention-days: 1
+
+  linux:
+    name: Linux i386
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Install i386 toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends binutils file gcc-multilib g++-multilib
+
+      - name: Configure shared library
+        run: >-
+          cmake -S . -B build/shared
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DCMAKE_C_FLAGS=-m32
+          -DCMAKE_CXX_FLAGS=-m32
+          -DASJITX86_BUILD_SHARED=ON
+          -DASJITX86_BUILD_TESTS=ON
+
+      - name: Build shared library
+        run: cmake --build build/shared --parallel
+
+      - name: Test shared library
+        run: ctest --test-dir build/shared --output-on-failure
+
+      - name: Install shared library
+        run: >-
+          cmake --install build/shared
+          --prefix package/runtime/linux-i386/shared
+
+      - name: Configure static library
+        run: >-
+          cmake -S . -B build/static
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DCMAKE_C_FLAGS=-m32
+          -DCMAKE_CXX_FLAGS=-m32
+          -DASJITX86_BUILD_SHARED=OFF
+          -DASJITX86_BUILD_TESTS=ON
+
+      - name: Build static library
+        run: cmake --build build/static --parallel
+
+      - name: Test static library
+        run: ctest --test-dir build/static --output-on-failure
+
+      - name: Install static library
+        run: >-
+          cmake --install build/static
+          --prefix package/runtime/linux-i386/static
+
+      - name: Split Linux symbols
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          shared_library="$(find package/runtime/linux-i386/shared -type f -name '*.so*' -print -quit)"
+          static_library="$(find package/runtime/linux-i386/static -type f -name '*.a' -print -quit)"
+          test -n "$shared_library"
+          test -n "$static_library"
+
+          shared_symbol="package/symbols/linux-i386/shared/lib/$(basename "$shared_library").debug"
+          static_symbol="package/symbols/linux-i386/static/lib/$(basename "$static_library").debug"
+          mkdir -p "$(dirname "$shared_symbol")" "$(dirname "$static_symbol")"
+
+          objcopy --only-keep-debug "$shared_library" "$shared_symbol"
+          strip --strip-unneeded "$shared_library"
+          objcopy --add-gnu-debuglink="$PWD/$shared_symbol" "$shared_library"
+
+          cp "$static_library" "$static_symbol"
+          strip --strip-debug "$static_library"
+
+          file "$shared_library" | grep -F "ELF 32-bit"
+          file "$static_library" | grep -F "current ar archive"
+
+      - name: Upload Linux files
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: runtime-linux
+          path: package/runtime
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Upload Linux symbols
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: symbols-linux
+          path: package/symbols
+          if-no-files-found: error
+          retention-days: 1
+
+  release:
+    name: Publish release
+    needs:
+      - windows
+      - linux
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download runtime files
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: runtime-*
+          path: dist/runtime
+          merge-multiple: true
+
+      - name: Download symbols
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: symbols-*
+          path: dist/symbols
+          merge-multiple: true
+
+      - name: Create release archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          runtime_archive="angelscript_jit_x86-${GITHUB_REF_NAME}.zip"
+          symbols_archive="angelscript_jit_x86-${GITHUB_REF_NAME}-symbols.zip"
+
+          (cd dist/runtime && cmake -E tar cf "../../$runtime_archive" --format=zip -- .)
+          (cd dist/symbols && cmake -E tar cf "../../$symbols_archive" --format=zip -- .)
+
+          cmake -E tar tf "$runtime_archive"
+          cmake -E tar tf "$symbols_archive"
+
+      - name: Publish GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          runtime_archive="angelscript_jit_x86-${GITHUB_REF_NAME}.zip"
+          symbols_archive="angelscript_jit_x86-${GITHUB_REF_NAME}-symbols.zip"
+
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+              gh release upload "$GITHUB_REF_NAME" "$runtime_archive" "$symbols_archive" --clobber
+          else
+              gh release create "$GITHUB_REF_NAME" \
+                  "$runtime_archive" \
+                  "$symbols_archive" \
+                  --verify-tag \
+                  --generate-notes \
+                  --title "$GITHUB_REF_NAME"
+          fi
