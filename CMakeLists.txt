@@ -53,6 +53,14 @@ target_sources(as_jit_x86 PRIVATE
     src/engine/jit_engine.cpp
     src/compiler/jit_compiler.cpp
     src/codegen/emit.cpp
+    src/codegen/emit/analysis.cpp
+    src/codegen/emit/calls.cpp
+    src/codegen/emit/control_flow.cpp
+    src/codegen/emit/emitter.cpp
+    src/codegen/emit/memory.cpp
+    src/codegen/emit/numeric.cpp
+    src/codegen/emit/references.cpp
+    src/codegen/emit/stack.cpp
     src/bytecode/bc_helpers.cpp
     src/bytecode/helpers/stack_memory_helpers.cpp
     src/bytecode/helpers/comparison_helpers.cpp
