@@ -134,15 +134,50 @@ int BcCallSys(asSVMRegisters* regs, const asDWORD* bc) {
     regs->programPointer = const_cast<asDWORD*>(bc);
     regs->stackPointer += CallSystemFunction(i, ctx);
     regs->programPointer = NextBc(bc, 2);
-    if (regs->doProcessSuspend) {
-        if (ctx->m_doSuspend) {
-            ctx->m_status = asEXECUTION_SUSPENDED;
-            return JITBC_EXIT;
-        }
-        if (ctx->m_status != asEXECUTION_ACTIVE)
-            return JITBC_EXIT;
+    return regs->doProcessSuspend ? FinishSystemCall(regs) : JITBC_CONTINUE;
+}
+
+int FinishSystemCall(asSVMRegisters* regs) {
+    auto* ctx = Ctx(regs);
+    if (ctx->m_doSuspend) {
+        ctx->m_status = asEXECUTION_SUSPENDED;
+        return JITBC_EXIT;
     }
-    return JITBC_CONTINUE;
+    return ctx->m_status == asEXECUTION_ACTIVE ? JITBC_CONTINUE : JITBC_EXIT;
+}
+
+int FinishSystemCallAt(asSVMRegisters* regs, asCScriptFunction* function,
+                       const asDWORD* catchBc) {
+    auto* ctx = Ctx(regs);
+    if (ctx->m_status == asEXECUTION_EXCEPTION &&
+        ctx->m_exceptionWillBeCaught) {
+        ctx->CleanStack(true);
+        if (ctx->m_status == asEXECUTION_ACTIVE &&
+            ctx->m_currentFunction == function &&
+            regs->programPointer == catchBc)
+            return kJitBcCaught;
+        return JITBC_EXIT;
+    }
+    return FinishSystemCall(regs);
+}
+
+void RaiseInternalException(asSVMRegisters* regs, const asDWORD* bc,
+                            const char* message) {
+    regs->programPointer = const_cast<asDWORD*>(bc);
+    Ctx(regs)->SetInternalException(message);
+}
+
+int RaiseAndCatchInternalException(asSVMRegisters* regs, const asDWORD* bc,
+                                   const char* message,
+                                   asCScriptFunction* function,
+                                   const asDWORD* catchBc) {
+    auto* ctx = Ctx(regs);
+    regs->programPointer = const_cast<asDWORD*>(bc);
+    ctx->SetInternalException(message);
+    if (ctx->m_exceptionWillBeCaught) ctx->CleanStack(true);
+    return ctx->m_status == asEXECUTION_ACTIVE &&
+           ctx->m_currentFunction == function &&
+           regs->programPointer == catchBc ? JITBC_CONTINUE : JITBC_EXIT;
 }
 
 int BcCallBnd(asSVMRegisters* regs, const asDWORD* bc) {

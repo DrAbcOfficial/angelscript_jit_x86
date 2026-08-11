@@ -5,9 +5,11 @@
 #include "bytecode/helpers/runtime_helpers.h"
 
 #include "as_objecttype.h"
+#include "as_callfunc.h"
 #include "as_scriptengine.h"
 #include "as_scriptfunction.h"
 #include "as_scriptobject.h"
+#include "as_texts.h"
 
 #include <asmjit/x86.h>
 
@@ -329,6 +331,7 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
     asDWORD* bc = function->GetByteCode(&bcLen);
     if (!bc || bcLen == 0) return asERROR;
     auto* engine = static_cast<asCScriptEngine*>(function->GetEngine());
+    auto* scriptFunction = static_cast<asCScriptFunction*>(function);
 
     std::vector<EmitIns> ins;
     ins.reserve(bcLen);
@@ -372,6 +375,27 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
         }
         default:
             break;
+        }
+    }
+
+    std::vector<int> localCatchTarget(ins.size(), -1);
+    if (scriptFunction->scriptData) {
+        for (size_t i = 0; i < ins.size(); i++) {
+            int catchTarget = -1;
+            for (asUINT tryIndex = 0;
+                 tryIndex < scriptFunction->scriptData->tryCatchInfo.GetLength();
+                 tryIndex++) {
+                const asSTryCatchInfo& info =
+                    scriptFunction->scriptData->tryCatchInfo[tryIndex];
+                if (ins[i].off >= info.tryPos && ins[i].off < info.catchPos) {
+                    if (info.catchPos >= bcLen) return asERROR;
+                    catchTarget = indexOfOffset[info.catchPos];
+                }
+            }
+            if (catchTarget >= 0) {
+                localCatchTarget[i] = catchTarget;
+                needsLabel[static_cast<size_t>(catchTarget)] = 1;
+            }
         }
     }
 
@@ -497,14 +521,44 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
     Label exitLabel = cc.new_label();
 
     {
-        asPWORD entryId = 1;
+        std::vector<size_t> entryIndices;
+        entryIndices.reserve(ins.size());
         for (size_t i = 0; i < ins.size(); i++) {
-            if (ins[i].op == asBC_JitEntry) {
-                cc.cmp(jitArg, Imm(entryId++));
-                cc.je(labels[i]);
-            }
+            if (ins[i].op == asBC_JitEntry)
+                entryIndices.push_back(i);
         }
-        cc.jmp(exitLabel);
+        if (entryIndices.empty()) {
+            cc.jmp(exitLabel);
+        } else {
+            cc.cmp(jitArg, 1);
+            cc.je(labels[entryIndices.front()]);
+
+            auto emitEntryRange = [&](auto&& self, size_t first,
+                                      size_t last) -> void {
+                const size_t middle = first + (last - first) / 2;
+                cc.cmp(jitArg, Imm(asPWORD(middle + 1)));
+                cc.je(labels[entryIndices[middle]]);
+                if (first < middle && middle < last) {
+                    Label lower = cc.new_label();
+                    cc.jb(lower);
+                    self(self, middle + 1, last);
+                    cc.bind(lower);
+                    self(self, first, middle - 1);
+                } else if (first < middle) {
+                    cc.ja(exitLabel);
+                    self(self, first, middle - 1);
+                } else if (middle < last) {
+                    cc.jb(exitLabel);
+                    self(self, middle + 1, last);
+                } else {
+                    cc.jmp(exitLabel);
+                }
+            };
+            if (entryIndices.size() > 1)
+                emitEntryRange(emitEntryRange, 1, entryIndices.size() - 1);
+            else
+                cc.jmp(exitLabel);
+        }
     }
 
     for (size_t i = 0; i < ins.size(); i++) {
@@ -540,6 +594,43 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
             inv->set_ret(0, res);
             cc.test(res, res);
             cc.jnz(exitLabel);
+            return true;
+        };
+        auto emitInternalException = [&](const char* message) -> bool {
+            InvokeNode* inv = nullptr;
+            const int catchTarget = localCatchTarget[i];
+            if (catchTarget >= 0) {
+                Error invErr = cc.invoke(
+                    Out<InvokeNode*>(inv),
+                    Imm(int64_t((intptr_t)&detail::RaiseAndCatchInternalException)),
+                    FuncSignature::build<int, asSVMRegisters*, const asDWORD*,
+                                         const char*, asCScriptFunction*,
+                                         const asDWORD*>());
+                if (invErr != kErrorOk) return false;
+                x86::Gp result = cc.new_gp32("exceptionResult");
+                const asDWORD* catchBc =
+                    bc + ins[static_cast<size_t>(catchTarget)].off;
+                inv->set_arg(0, regs);
+                inv->set_arg(1, Imm(int64_t((intptr_t)ip)));
+                inv->set_arg(2, Imm(int64_t((intptr_t)message)));
+                inv->set_arg(3, Imm(int64_t((intptr_t)scriptFunction)));
+                inv->set_arg(4, Imm(int64_t((intptr_t)catchBc)));
+                inv->set_ret(0, result);
+                cc.test(result, result);
+                cc.jnz(exitLabel);
+                cc.jmp(labels[static_cast<size_t>(catchTarget)]);
+            } else {
+                Error invErr = cc.invoke(
+                    Out<InvokeNode*>(inv),
+                    Imm(int64_t((intptr_t)&detail::RaiseInternalException)),
+                    FuncSignature::build<void, asSVMRegisters*, const asDWORD*,
+                                         const char*>());
+                if (invErr != kErrorOk) return false;
+                inv->set_arg(0, regs);
+                inv->set_arg(1, Imm(int64_t((intptr_t)ip)));
+                inv->set_arg(2, Imm(int64_t((intptr_t)message)));
+                cc.jmp(exitLabel);
+            }
             return true;
         };
 
@@ -680,6 +771,53 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
                 cc.mov(x86::dword_ptr(sp, 4), high);
                 storeSp(sp);
             } else if (!emitHelperCall()) return asERROR;
+            break;
+        }
+        case asBC_PopPtr: {
+            x86::Gp sp = cc.new_gp32("sp");
+            loadSp(sp);
+            cc.add(sp, AS_PTR_SIZE * 4);
+            storeSp(sp);
+            break;
+        }
+        case asBC_PopRPtr: {
+            x86::Gp sp = cc.new_gp32("sp");
+            x86::Gp value = cc.new_gp32("value");
+            loadSp(sp);
+            cc.mov(value, x86::dword_ptr(sp));
+            cc.add(sp, AS_PTR_SIZE * 4);
+            storeSp(sp);
+            cc.mov(x86::dword_ptr(
+                       regs, offsetof(asSVMRegisters, valueRegister)), value);
+            break;
+        }
+        case asBC_PshRPtr: {
+            x86::Gp sp = cc.new_gp32("sp");
+            x86::Gp value = cc.new_gp32("value");
+            loadSp(sp);
+            cc.sub(sp, AS_PTR_SIZE * 4);
+            cc.mov(value, x86::dword_ptr(
+                              regs, offsetof(asSVMRegisters, valueRegister)));
+            cc.mov(x86::dword_ptr(sp), value);
+            storeSp(sp);
+            break;
+        }
+        case asBC_PGA: {
+            x86::Gp sp = cc.new_gp32("sp");
+            loadSp(sp);
+            cc.sub(sp, AS_PTR_SIZE * 4);
+            cc.mov(x86::dword_ptr(sp),
+                   Imm(int64_t((intptr_t)asBC_PTRARG(ip))));
+            storeSp(sp);
+            break;
+        }
+        case asBC_TYPEID: {
+            x86::Gp sp = cc.new_gp32("sp");
+            loadSp(sp);
+            cc.sub(sp, 4);
+            cc.mov(x86::dword_ptr(sp),
+                   Imm(int64_t(static_cast<int32_t>(asBC_DWORDARG(ip)))));
+            storeSp(sp);
             break;
         }
         case asBC_VAR: {
@@ -897,6 +1035,69 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
             cc.jnz(exitLabel);
             break;
         }
+        case asBC_CALLSYS: {
+            x86::Gp context = cc.new_gp32("context");
+            x86::Gp popDwords = cc.new_gp32("popDwords");
+            cc.mov(x86::dword_ptr(regs, ppOff),
+                   Imm(int64_t((intptr_t)ip)));
+            cc.mov(context,
+                   x86::dword_ptr(regs, offsetof(asSVMRegisters, ctx)));
+
+            InvokeNode* inv = nullptr;
+            Error invErr = cc.invoke(
+                Out<InvokeNode*>(inv),
+                Imm(int64_t((intptr_t)&CallSystemFunction)),
+                FuncSignature::build<int, int, asCContext*>());
+            if (invErr != kErrorOk) return asERROR;
+            inv->set_arg(0, asBC_INTARG(ip));
+            inv->set_arg(1, context);
+            inv->set_ret(0, popDwords);
+
+            x86::Gp sp = cc.new_gp32("sp");
+            loadSp(sp);
+            cc.shl(popDwords, 2);
+            cc.add(sp, popDwords);
+            storeSp(sp);
+            cc.mov(x86::dword_ptr(regs, ppOff),
+                   Imm(int64_t((intptr_t)(ip + in.size))));
+
+            Label done = cc.new_label();
+            cc.cmp(x86::byte_ptr(
+                       regs, offsetof(asSVMRegisters, doProcessSuspend)), 0);
+            cc.je(done);
+            InvokeNode* finish = nullptr;
+            const int catchTarget = localCatchTarget[i];
+            if (catchTarget >= 0) {
+                invErr = cc.invoke(
+                    Out<InvokeNode*>(finish),
+                    Imm(int64_t((intptr_t)&detail::FinishSystemCallAt)),
+                    FuncSignature::build<int, asSVMRegisters*,
+                                         asCScriptFunction*, const asDWORD*>());
+            } else {
+                invErr = cc.invoke(
+                    Out<InvokeNode*>(finish),
+                    Imm(int64_t((intptr_t)&detail::FinishSystemCall)),
+                    FuncSignature::build<int, asSVMRegisters*>());
+            }
+            if (invErr != kErrorOk) return asERROR;
+            x86::Gp result = cc.new_gp32("systemCallResult");
+            finish->set_arg(0, regs);
+            if (catchTarget >= 0) {
+                const asDWORD* catchBc =
+                    bc + ins[static_cast<size_t>(catchTarget)].off;
+                finish->set_arg(1, Imm(int64_t((intptr_t)scriptFunction)));
+                finish->set_arg(2, Imm(int64_t((intptr_t)catchBc)));
+            }
+            finish->set_ret(0, result);
+            if (catchTarget >= 0) {
+                cc.cmp(result, detail::kJitBcCaught);
+                cc.je(labels[static_cast<size_t>(catchTarget)]);
+            }
+            cc.test(result, result);
+            cc.jnz(exitLabel);
+            cc.bind(done);
+            break;
+        }
         case asBC_ALLOC: {
             auto* objectType = reinterpret_cast<asCObjectType*>(asBC_PTRARG(ip));
             if (!(objectType->flags & asOBJ_SCRIPT_OBJECT)) {
@@ -987,6 +1188,20 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
             cc.mov(x86::dword_ptr(slot), object);
             if (in.op == asBC_GETOBJ)
                 cc.mov(x86::dword_ptr(fp, offset), 0);
+            break;
+        }
+        case asBC_GETREF: {
+            x86::Gp sp = cc.new_gp32("sp");
+            x86::Gp slot = cc.new_gp32("slot");
+            x86::Gp offset = cc.new_gp32("offset");
+            x86::Gp address = cc.new_gp32("address");
+            loadSp(sp);
+            cc.lea(slot, x86::dword_ptr(sp, asBC_WORDARG0(ip) * 4));
+            cc.mov(offset, x86::dword_ptr(slot));
+            cc.shl(offset, 2);
+            cc.neg(offset);
+            cc.lea(address, x86::dword_ptr(fp, offset));
+            cc.mov(x86::dword_ptr(slot), address);
             break;
         }
         case asBC_REFCPY:
@@ -1172,7 +1387,7 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
             cc.mov(x86::dword_ptr(regs, offsetof(asSVMRegisters, valueRegister)), address);
             cc.jmp(done);
             cc.bind(fallback);
-            if (!emitHelperCall()) return asERROR;
+            if (!emitInternalException(TXT_NULL_POINTER_ACCESS)) return asERROR;
             cc.bind(done);
             break;
         }
@@ -1184,7 +1399,7 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
             cc.je(fallback);
             cc.jmp(done);
             cc.bind(fallback);
-            if (!emitHelperCall()) return asERROR;
+            if (!emitInternalException(TXT_NULL_POINTER_ACCESS)) return asERROR;
             cc.bind(done);
             break;
         }
@@ -1206,6 +1421,42 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
                 cc.mov(x86::dword_ptr(fp, -destination * 4), low);
                 cc.mov(x86::dword_ptr(fp, -destination * 4 + 4), high);
             } else if (!emitHelperCall()) return asERROR;
+            break;
+        }
+        case asBC_iTOi64: {
+            const int destination = asBC_SWORDARG0(ip);
+            const int source = asBC_SWORDARG1(ip);
+            x86::Gp low = cc.new_gp32("low");
+            x86::Gp high = cc.new_gp32("high");
+            loadVar(source, low);
+            cc.mov(high, low);
+            cc.sar(high, 31);
+            cc.mov(x86::dword_ptr(fp, -destination * 4), low);
+            cc.mov(x86::dword_ptr(fp, -destination * 4 + 4), high);
+            break;
+        }
+        case asBC_i64TOi: {
+            const int destination = asBC_SWORDARG0(ip);
+            const int source = asBC_SWORDARG1(ip);
+            x86::Gp value = cc.new_gp32("value");
+            loadVar(source, value);
+            storeVar(destination, value);
+            break;
+        }
+        case asBC_iTOd: {
+            const int destination = asBC_SWORDARG0(ip);
+            const int source = asBC_SWORDARG1(ip);
+            x86::Vec value = cc.new_xmm_sd("value");
+            cc.cvtsi2sd(value, x86::dword_ptr(fp, -source * 4));
+            cc.movsd(x86::qword_ptr(fp, -destination * 4), value);
+            break;
+        }
+        case asBC_dTOi: {
+            const int destination = asBC_SWORDARG0(ip);
+            const int source = asBC_SWORDARG1(ip);
+            x86::Gp value = cc.new_gp32("value");
+            cc.cvttsd2si(value, x86::qword_ptr(fp, -source * 4));
+            storeVar(destination, value);
             break;
         }
         case asBC_ADDi:
@@ -1395,27 +1646,35 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
                 x86::Gp divisor = cc.new_gp32("divisor");
                 x86::Gp high = cc.new_gp32("high");
                 Label overflowCheck = cc.new_label();
-                Label fallback = cc.new_label();
+                Label divideByZero = cc.new_label();
+                Label divideOverflow = cc.new_label();
                 Label divide = cc.new_label();
                 Label done = cc.new_label();
                 loadVar(a1, dividend);
                 loadVar(a2, divisor);
                 cc.test(divisor, divisor);
-                cc.jz(fallback);
+                cc.jz(divideByZero);
                 cc.cmp(divisor, -1);
                 cc.je(overflowCheck);
                 cc.jmp(divide);
                 cc.bind(overflowCheck);
                 cc.cmp(dividend, Imm(int64_t(INT32_MIN)));
-                cc.je(fallback);
+                cc.je(divideOverflow);
                 cc.bind(divide);
                 cc.mov(high, dividend);
                 cc.sar(high, 31);
                 cc.idiv(high, dividend, divisor);
                 storeVar(a0, in.op == asBC_DIVi ? dividend : high);
                 cc.jmp(done);
-                cc.bind(fallback);
-                if (!emitHelperCall()) return asERROR;
+
+                auto emitDivideException = [&](const Label& label,
+                                               const char* message) -> bool {
+                    cc.bind(label);
+                    return emitInternalException(message);
+                };
+                if (!emitDivideException(divideByZero, TXT_DIVIDE_BY_ZERO) ||
+                    !emitDivideException(divideOverflow, TXT_DIVIDE_OVERFLOW))
+                    return asERROR;
                 cc.bind(done);
             } else if (!emitHelperCall()) return asERROR;
             break;
