@@ -1,8 +1,12 @@
 #include "codegen/emit.h"
 #include "bytecode/bc_helpers.h"
 #include "bytecode/bc_info.h"
+#include "bytecode/helpers/object_helpers.h"
+#include "bytecode/helpers/runtime_helpers.h"
 
 #include "as_objecttype.h"
+#include "as_scriptengine.h"
+#include "as_scriptfunction.h"
 #include "as_scriptobject.h"
 
 #include <asmjit/x86.h>
@@ -19,6 +23,106 @@ struct EmitIns {
     uint32_t   off;
     uint32_t   size;
 };
+
+struct SimpleFactoryTarget {
+    asCObjectType* objectType = nullptr;
+    asCScriptFunction* constructor = nullptr;
+};
+
+bool IsSimpleConstructor(asCScriptFunction* function) {
+    if (!function || !function->scriptData) return false;
+    asUINT length = 0;
+    asDWORD* bytecode = function->GetByteCode(&length);
+    if (!bytecode || !length) return false;
+
+    bool sawReturn = false;
+    for (asUINT offset = 0; offset < length;) {
+        asEBCInstr op = static_cast<asEBCInstr>(bytecode[offset] & 0xFF);
+        switch (op) {
+        case asBC_JitEntry:
+        case asBC_SetV4:
+        case asBC_LoadThisR:
+        case asBC_WRTV4:
+        case asBC_LoadRObjR:
+        case asBC_RDR4:
+        case asBC_ADDIi:
+            break;
+        case asBC_RET:
+            if (sawReturn) return false;
+            sawReturn = true;
+            break;
+        default:
+            return false;
+        }
+        offset += BcSize(op);
+    }
+    return sawReturn;
+}
+
+bool DecodeSimpleFactory(asCScriptEngine* engine, asCScriptFunction* factory,
+                         SimpleFactoryTarget& target) {
+    if (!factory || !factory->scriptData || factory->objectType ||
+        factory->DoesReturnOnStack())
+        return false;
+
+    asUINT length = 0;
+    asDWORD* bytecode = factory->GetByteCode(&length);
+    if (!bytecode || !length) return false;
+
+    std::vector<const asDWORD*> operations;
+    for (asUINT offset = 0; offset < length;) {
+        asEBCInstr op = static_cast<asEBCInstr>(bytecode[offset] & 0xFF);
+        if (op != asBC_JitEntry) operations.push_back(bytecode + offset);
+        offset += BcSize(op);
+    }
+    if (operations.size() < 4 ||
+        (*operations.front() & 0xFF) != asBC_PSF ||
+        (*operations[operations.size() - 3] & 0xFF) != asBC_ALLOC ||
+        (*operations[operations.size() - 2] & 0xFF) != asBC_LOADOBJ ||
+        (*operations.back() & 0xFF) != asBC_RET)
+        return false;
+
+    const int localOffset = asBC_SWORDARG0(operations.front());
+    if (asBC_SWORDARG0(operations[operations.size() - 2]) != localOffset)
+        return false;
+
+    int pushedArgumentDwords = 0;
+    for (size_t index = 1; index + 3 < operations.size(); index++) {
+        asEBCInstr op = static_cast<asEBCInstr>(*operations[index] & 0xFF);
+        if (op == asBC_PshV4 || op == asBC_PshVPtr)
+            pushedArgumentDwords += 1;
+        else if (op == asBC_PshV8)
+            pushedArgumentDwords += 2;
+        else
+            return false;
+    }
+
+    const int factoryArgumentDwords = factory->GetSpaceNeededForArguments();
+    if (pushedArgumentDwords != factoryArgumentDwords ||
+        asBC_WORDARG0(operations.back()) != factoryArgumentDwords)
+        return false;
+
+    const asDWORD* alloc = operations[operations.size() - 3];
+    auto* objectType = reinterpret_cast<asCObjectType*>(asBC_PTRARG(alloc));
+    if (!objectType || !(objectType->flags & asOBJ_SCRIPT_OBJECT)) return false;
+    int constructorId = -1;
+    for (asUINT index = 0; index < objectType->beh.factories.GetLength(); index++) {
+        if (objectType->beh.factories[index] == factory->id) {
+            constructorId = objectType->beh.constructors[index];
+            break;
+        }
+    }
+    if (constructorId < 0) return false;
+    auto* constructor = engine->scriptFunctions[constructorId];
+    if (!constructor ||
+        constructor->GetSpaceNeededForArguments() != factoryArgumentDwords ||
+        !IsSimpleConstructor(constructor))
+        return false;
+
+    target.objectType = objectType;
+    target.constructor = constructor;
+    return true;
+}
 
 // Script classes all use these concrete behaviours; bypassing the generic
 // system-call dispatcher preserves their reference-counting semantics.
@@ -160,6 +264,9 @@ bool PreservesValueRegister(asEBCInstr op) {
     case asBC_OBJTYPE:
     case asBC_TYPEID:
     case asBC_FuncPtr:
+    case asBC_LOADOBJ:
+    case asBC_INCi:
+    case asBC_DECi:
         return true;
     default:
         return false;
@@ -196,6 +303,7 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
     asUINT bcLen = 0;
     asDWORD* bc = function->GetByteCode(&bcLen);
     if (!bc || bcLen == 0) return asERROR;
+    auto* engine = static_cast<asCScriptEngine*>(function->GetEngine());
 
     std::vector<EmitIns> ins;
     ins.reserve(bcLen);
@@ -558,6 +666,72 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
             } else if (!emitHelperCall()) return asERROR;
             break;
         }
+        case asBC_CALL: {
+            auto* target = engine->scriptFunctions[asBC_INTARG(ip)];
+            SimpleFactoryTarget factoryTarget;
+            if (DecodeSimpleFactory(engine, target, factoryTarget)) {
+                InvokeNode* inv = nullptr;
+                Error invErr = cc.invoke(
+                    Out<InvokeNode*>(inv),
+                    Imm(int64_t((intptr_t)&detail::CallScriptFactory)),
+                    FuncSignature::build<int, asSVMRegisters*, asCScriptFunction*,
+                                         asCObjectType*, asCScriptFunction*,
+                                         const asDWORD*>());
+                if (invErr != kErrorOk) return asERROR;
+                x86::Gp result = cc.new_gp32("result");
+                inv->set_arg(0, regs);
+                inv->set_arg(1, Imm(int64_t((intptr_t)target)));
+                inv->set_arg(2, Imm(int64_t((intptr_t)factoryTarget.objectType)));
+                inv->set_arg(3, Imm(int64_t((intptr_t)factoryTarget.constructor)));
+                inv->set_arg(4, Imm(int64_t((intptr_t)(ip + in.size))));
+                inv->set_ret(0, result);
+                cc.test(result, result);
+                cc.jnz(exitLabel);
+                break;
+            }
+
+            InvokeNode* inv = nullptr;
+            Error invErr = cc.invoke(
+                Out<InvokeNode*>(inv),
+                Imm(int64_t((intptr_t)&detail::CallScriptFunction)),
+                FuncSignature::build<int, asSVMRegisters*, asCScriptFunction*,
+                                     const asDWORD*>());
+            if (invErr != kErrorOk) return asERROR;
+            x86::Gp result = cc.new_gp32("result");
+            inv->set_arg(0, regs);
+            inv->set_arg(1, Imm(int64_t((intptr_t)target)));
+            inv->set_arg(2, Imm(int64_t((intptr_t)(ip + in.size))));
+            inv->set_ret(0, result);
+            cc.test(result, result);
+            cc.jnz(exitLabel);
+            break;
+        }
+        case asBC_ALLOC: {
+            auto* objectType = reinterpret_cast<asCObjectType*>(asBC_PTRARG(ip));
+            if (!(objectType->flags & asOBJ_SCRIPT_OBJECT)) {
+                if (!emitHelperCall()) return asERROR;
+                break;
+            }
+
+            auto* constructor =
+                engine->scriptFunctions[asBC_INTARG(ip + AS_PTR_SIZE)];
+            InvokeNode* inv = nullptr;
+            Error invErr = cc.invoke(
+                Out<InvokeNode*>(inv),
+                Imm(int64_t((intptr_t)&detail::AllocScriptObject)),
+                FuncSignature::build<int, asSVMRegisters*, asCObjectType*,
+                                     asCScriptFunction*, const asDWORD*>());
+            if (invErr != kErrorOk) return asERROR;
+            x86::Gp result = cc.new_gp32("result");
+            inv->set_arg(0, regs);
+            inv->set_arg(1, Imm(int64_t((intptr_t)objectType)));
+            inv->set_arg(2, Imm(int64_t((intptr_t)constructor)));
+            inv->set_arg(3, Imm(int64_t((intptr_t)(ip + in.size))));
+            inv->set_ret(0, result);
+            cc.test(result, result);
+            cc.jnz(exitLabel);
+            break;
+        }
         case asBC_FREE: {
             auto* objectType = reinterpret_cast<asCObjectType*>(asBC_PTRARG(ip));
             const bool scriptObject = (objectType->flags & asOBJ_SCRIPT_OBJECT) != 0;
@@ -593,6 +767,15 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
             cc.mov(object, x86::dword_ptr(regs, offsetof(asSVMRegisters, objectRegister)));
             storeVar(destination, object);
             cc.mov(x86::dword_ptr(regs, offsetof(asSVMRegisters, objectRegister)), 0);
+            break;
+        }
+        case asBC_LOADOBJ: {
+            int source = asBC_SWORDARG0(ip);
+            x86::Gp object = cc.new_gp32("object");
+            loadVar(source, object);
+            cc.mov(x86::dword_ptr(regs, offsetof(asSVMRegisters, objectType)), 0);
+            cc.mov(x86::dword_ptr(regs, offsetof(asSVMRegisters, objectRegister)), object);
+            cc.mov(x86::dword_ptr(fp, -source * 4), 0);
             break;
         }
         case asBC_GETOBJ:
@@ -1094,6 +1277,29 @@ int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJIT
                 else
                     cc.dec(x86::dword_ptr(fp, -a0 * 4));
             } else if (!emitHelperCall()) return asERROR;
+            break;
+        }
+        case asBC_LDG: {
+            cc.mov(x86::dword_ptr(regs, offsetof(asSVMRegisters, valueRegister)),
+                   Imm(int64_t((intptr_t)asBC_PTRARG(ip))));
+            break;
+        }
+        case asBC_LDV: {
+            int source = asBC_SWORDARG0(ip);
+            x86::Gp address = cc.new_gp32("address");
+            cc.lea(address, x86::dword_ptr(fp, -source * 4));
+            cc.mov(x86::dword_ptr(regs, offsetof(asSVMRegisters, valueRegister)), address);
+            break;
+        }
+        case asBC_INCi:
+        case asBC_DECi: {
+            x86::Gp address = cc.new_gp32("address");
+            cc.mov(address,
+                   x86::dword_ptr(regs, offsetof(asSVMRegisters, valueRegister)));
+            if (in.op == asBC_INCi)
+                cc.inc(x86::dword_ptr(address));
+            else
+                cc.dec(x86::dword_ptr(address));
             break;
         }
         case asBC_ADDIi:

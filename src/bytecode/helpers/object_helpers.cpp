@@ -12,22 +12,57 @@
 
 namespace asjitx86::detail {
 
+int AllocScriptObject(asSVMRegisters* regs, asCObjectType* objectType,
+                      asCScriptFunction* constructor, const asDWORD* nextBc) {
+    auto* ctx = Ctx(regs);
+    asDWORD* memory = static_cast<asDWORD*>(ctx->m_engine->CallAlloc(objectType));
+    ScriptObject_Construct(objectType, reinterpret_cast<asCScriptObject*>(memory));
+    auto** destination = reinterpret_cast<asDWORD**>(
+        *reinterpret_cast<asPWORD*>(regs->stackPointer +
+                                    constructor->GetSpaceNeededForArguments()));
+    if (destination) *destination = memory;
+    regs->stackPointer -= AS_PTR_SIZE;
+    *reinterpret_cast<asPWORD*>(regs->stackPointer) =
+        reinterpret_cast<asPWORD>(memory);
+    return CallScriptFunction(regs, constructor, nextBc);
+}
+
+int CallScriptFactory(asSVMRegisters* regs, asCScriptFunction* factory,
+                      asCObjectType* objectType,
+                      asCScriptFunction* constructor, const asDWORD* nextBc) {
+    auto* ctx = Ctx(regs);
+    if (regs->doProcessSuspend ||
+        ctx->m_callStack.GetLength() / CALLSTACK_FRAME_SIZE >=
+            kMaxDirectJitCallDepth ||
+        !constructor->scriptData || !constructor->scriptData->jitFunction) {
+        return CallScriptFunction(regs, factory, nextBc);
+    }
+
+    asDWORD* callerStackPointer = regs->stackPointer;
+    asDWORD* memory = static_cast<asDWORD*>(ctx->m_engine->CallAlloc(objectType));
+    ScriptObject_Construct(objectType, reinterpret_cast<asCScriptObject*>(memory));
+    regs->stackPointer -= AS_PTR_SIZE;
+    *reinterpret_cast<asPWORD*>(regs->stackPointer) =
+        reinterpret_cast<asPWORD>(memory);
+
+    int result = CallScriptFunction(regs, constructor, nextBc);
+    if (result == JITBC_CONTINUE) {
+        regs->stackPointer =
+            callerStackPointer + factory->GetSpaceNeededForArguments();
+        regs->objectRegister = memory;
+        regs->objectType = nullptr;
+    }
+    return result;
+}
+
 int BcAlloc(asSVMRegisters* regs, const asDWORD* bc) {
     auto* ctx = Ctx(regs);
-    asUINT callerCallStackLength = ctx->m_callStack.GetLength();
     asCObjectType* objType = (asCObjectType*)asBC_PTRARG(bc);
     int func = asBC_INTARG(bc + AS_PTR_SIZE);
     if (objType->flags & asOBJ_SCRIPT_OBJECT) {
-        asDWORD* mem = (asDWORD*)ctx->m_engine->CallAlloc(objType);
-        ScriptObject_Construct(objType, (asCScriptObject*)mem);
-        asCScriptFunction* f = ctx->m_engine->scriptFunctions[func];
-        asDWORD** a = (asDWORD**)*(asPWORD*)(regs->stackPointer + f->GetSpaceNeededForArguments());
-        if (a) *a = mem;
-        regs->stackPointer -= AS_PTR_SIZE;
-        *(asPWORD*)regs->stackPointer = (asPWORD)mem;
-        regs->programPointer += 2 + AS_PTR_SIZE;
-        ctx->CallScriptFunction(f);
-        return ResumeJitCallChain(regs, callerCallStackLength);
+        return AllocScriptObject(regs, objType,
+                                 ctx->m_engine->scriptFunctions[func],
+                                 NextBc(bc, 2 + AS_PTR_SIZE));
     }
     asDWORD* mem = (asDWORD*)ctx->m_engine->CallAlloc(objType);
     if (func) {

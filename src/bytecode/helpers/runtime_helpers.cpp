@@ -13,22 +13,50 @@ namespace asjitx86::detail {
 
 namespace {
 
-thread_local unsigned s_jitCallChainDepth = 0;
+void PrepareScriptCall(asCContext* ctx, asCScriptFunction* function) {
+    assert(function->scriptData);
+    if (ctx->PushCallState() < 0) return;
 
-class JitCallChainGuard {
-public:
-    JitCallChainGuard() { s_jitCallChainDepth++; }
-    ~JitCallChainGuard() { s_jitCallChainDepth--; }
-};
+    ctx->m_currentFunction = function;
+    ctx->m_regs.programPointer = function->scriptData->byteCode.AddressOf();
+
+    asDWORD* oldStackPointer = ctx->m_regs.stackPointer;
+    if (!ctx->ReserveStackSpace(function->scriptData->stackNeeded)) return;
+
+    if (ctx->m_regs.stackPointer != oldStackPointer) {
+        int argumentDwords = function->GetSpaceNeededForArguments() +
+                            (function->objectType ? AS_PTR_SIZE : 0) +
+                            (function->DoesReturnOnStack() ? AS_PTR_SIZE : 0);
+        std::memcpy(ctx->m_regs.stackPointer, oldStackPointer,
+                    sizeof(asDWORD) * argumentDwords);
+    }
+
+    ctx->m_regs.stackFramePointer = ctx->m_regs.stackPointer;
+    for (asUINT index = function->scriptData->variables.GetLength(); index-- > 0;) {
+        asSScriptVariable* variable = function->scriptData->variables[index];
+        if (variable->stackOffset <= 0) continue;
+        if (variable->onHeap &&
+            (variable->type.IsObject() || variable->type.IsFuncdef())) {
+            *reinterpret_cast<asPWORD*>(
+                &ctx->m_regs.stackFramePointer[-variable->stackOffset]) = 0;
+        }
+    }
+
+    ctx->m_regs.stackPointer -= function->scriptData->variableSpace;
+    if (ctx->m_regs.doProcessSuspend) {
+        if (ctx->m_lineCallback) ctx->CallLineCallback();
+        if (ctx->m_doSuspend) ctx->m_status = asEXECUTION_SUSPENDED;
+    }
+}
 
 }
 
 int ResumeJitCallChain(asSVMRegisters* regs, asUINT callerCallStackLength,
                        unsigned maxDirectDepth) {
     auto* ctx = Ctx(regs);
-    if (s_jitCallChainDepth >= maxDirectDepth) return JITBC_EXIT;
+    if (callerCallStackLength / CALLSTACK_FRAME_SIZE >= maxDirectDepth)
+        return JITBC_EXIT;
 
-    JitCallChainGuard guard;
     while (ctx->m_status == asEXECUTION_ACTIVE &&
            ctx->m_callStack.GetLength() > callerCallStackLength) {
         asCScriptFunction* function = ctx->m_currentFunction;
@@ -47,6 +75,15 @@ int ResumeJitCallChain(asSVMRegisters* regs, asUINT callerCallStackLength,
            JITBC_CONTINUE : JITBC_EXIT;
 }
 
+int CallScriptFunction(asSVMRegisters* regs, asCScriptFunction* function,
+                       const asDWORD* nextBc) {
+    auto* ctx = Ctx(regs);
+    asUINT callerCallStackLength = ctx->m_callStack.GetLength();
+    regs->programPointer = const_cast<asDWORD*>(nextBc);
+    PrepareScriptCall(ctx, function);
+    return ResumeJitCallChain(regs, callerCallStackLength);
+}
+
 int BcJitEntry(asSVMRegisters* regs, const asDWORD* bc) {
     regs->programPointer = NextBc(bc, 1 + AS_PTR_SIZE);
     return JITBC_CONTINUE;
@@ -54,11 +91,9 @@ int BcJitEntry(asSVMRegisters* regs, const asDWORD* bc) {
 
 int BcCall(asSVMRegisters* regs, const asDWORD* bc) {
     auto* ctx = Ctx(regs);
-    asUINT callerCallStackLength = ctx->m_callStack.GetLength();
-    int i = asBC_INTARG(bc);
-    regs->programPointer = NextBc(bc, 2);
-    ctx->CallScriptFunction(ctx->m_engine->scriptFunctions[i]);
-    return ResumeJitCallChain(regs, callerCallStackLength);
+    return CallScriptFunction(regs,
+                              ctx->m_engine->scriptFunctions[asBC_INTARG(bc)],
+                              NextBc(bc, 2));
 }
 
 int BcRet(asSVMRegisters* regs, const asDWORD* bc) {
@@ -68,9 +103,9 @@ int BcRet(asSVMRegisters* regs, const asDWORD* bc) {
         ctx->m_status = asEXECUTION_FINISHED;
         return JITBC_EXIT;
     }
-    asWORD w = asBC_WORDARG0(bc);
+    asWORD popSize = asBC_WORDARG0(bc);
     ctx->PopCallState();
-    regs->stackPointer += w;
+    regs->stackPointer += popSize;
     return JITBC_EXIT;
 }
 

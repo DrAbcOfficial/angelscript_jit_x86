@@ -2,9 +2,17 @@
 
 #include "angelscript.h"
 
+class asCObjectType;
+class asCScriptFunction;
+
 namespace asjitx86::detail {
 
 int BcAlloc(asSVMRegisters* regs, const asDWORD* bc);
+int AllocScriptObject(asSVMRegisters* regs, asCObjectType* objectType,
+                      asCScriptFunction* constructor, const asDWORD* nextBc);
+int CallScriptFactory(asSVMRegisters* regs, asCScriptFunction* factory,
+                      asCObjectType* objectType,
+                      asCScriptFunction* constructor, const asDWORD* nextBc);
 int BcFree(asSVMRegisters* regs, const asDWORD* bc);
 int BcLoadObj(asSVMRegisters* regs, const asDWORD* bc);
 int BcStoreObj(asSVMRegisters* regs, const asDWORD* bc);

@@ -2,12 +2,16 @@
 
 #include "angelscript.h"
 
+class asCScriptFunction;
+
 namespace asjitx86::detail {
 
 inline constexpr unsigned kMaxDirectJitCallDepth = 32;
 
 int ResumeJitCallChain(asSVMRegisters* regs, asUINT callerCallStackLength,
                        unsigned maxDirectDepth = kMaxDirectJitCallDepth);
+int CallScriptFunction(asSVMRegisters* regs, asCScriptFunction* function,
+                       const asDWORD* nextBc);
 int BcJitEntry(asSVMRegisters* regs, const asDWORD* bc);
 int BcCall(asSVMRegisters* regs, const asDWORD* bc);
 int BcRet(asSVMRegisters* regs, const asDWORD* bc);
