@@ -34,7 +34,25 @@ jobs:
         run: cmake --build build/shared --config RelWithDebInfo --parallel
 
       - name: Test shared library
-        run: ctest --test-dir build/shared -C RelWithDebInfo --output-on-failure
+        shell: pwsh
+        timeout-minutes: 20
+        run: |
+          Add-Type -TypeDefinition @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class NativeErrorMode {
+              [DllImport("kernel32.dll")]
+              public static extern uint SetErrorMode(uint mode);
+          }
+          '@
+          [NativeErrorMode]::SetErrorMode(0x8003) | Out-Null
+
+          ctest --test-dir build/shared -C RelWithDebInfo --output-on-failure
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "build/shared/tests/RelWithDebInfo/asjitx86_benchmark.exe"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "build/shared/tests/RelWithDebInfo/asjitx86_showcase.exe"
+          exit $LASTEXITCODE
 
       - name: Install shared library
         run: >-
@@ -52,7 +70,25 @@ jobs:
         run: cmake --build build/static --config RelWithDebInfo --parallel
 
       - name: Test static library
-        run: ctest --test-dir build/static -C RelWithDebInfo --output-on-failure
+        shell: pwsh
+        timeout-minutes: 20
+        run: |
+          Add-Type -TypeDefinition @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class NativeErrorMode {
+              [DllImport("kernel32.dll")]
+              public static extern uint SetErrorMode(uint mode);
+          }
+          '@
+          [NativeErrorMode]::SetErrorMode(0x8003) | Out-Null
+
+          ctest --test-dir build/static -C RelWithDebInfo --output-on-failure
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "build/static/tests/RelWithDebInfo/asjitx86_benchmark.exe"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "build/static/tests/RelWithDebInfo/asjitx86_showcase.exe"
+          exit $LASTEXITCODE
 
       - name: Install static library
         run: >-
@@ -125,7 +161,14 @@ jobs:
         run: cmake --build build/shared --parallel
 
       - name: Test shared library
-        run: ctest --test-dir build/shared --output-on-failure
+        shell: bash
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/build/shared:${LD_LIBRARY_PATH:-}"
+          timeout 10m ctest --test-dir build/shared --output-on-failure
+          timeout 10m build/shared/tests/asjitx86_benchmark
+          timeout 10m build/shared/tests/asjitx86_showcase
 
       - name: Install shared library
         run: >-
@@ -145,7 +188,13 @@ jobs:
         run: cmake --build build/static --parallel
 
       - name: Test static library
-        run: ctest --test-dir build/static --output-on-failure
+        shell: bash
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          timeout 10m ctest --test-dir build/static --output-on-failure
+          timeout 10m build/static/tests/asjitx86_benchmark
+          timeout 10m build/static/tests/asjitx86_showcase
 
       - name: Install static library
         run: >-

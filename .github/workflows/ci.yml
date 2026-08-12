@@ -1,0 +1,113 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: Windows x86 ${{ matrix.linkage }}
+    runs-on: windows-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - linkage: shared
+            build_shared: ON
+          - linkage: static
+            build_shared: OFF
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Configure
+        run: >-
+          cmake -S . -B build/${{ matrix.linkage }} -A Win32
+          -DASJITX86_BUILD_SHARED=${{ matrix.build_shared }}
+          -DASJITX86_BUILD_TESTS=ON
+
+      - name: Build
+        run: cmake --build build/${{ matrix.linkage }} --config Release --parallel
+
+      - name: Run complete test suite
+        shell: pwsh
+        timeout-minutes: 20
+        run: |
+          Add-Type -TypeDefinition @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class NativeErrorMode {
+              [DllImport("kernel32.dll")]
+              public static extern uint SetErrorMode(uint mode);
+          }
+          '@
+          [NativeErrorMode]::SetErrorMode(0x8003) | Out-Null
+
+          ctest --test-dir build/${{ matrix.linkage }} -C Release --output-on-failure
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          & "build/${{ matrix.linkage }}/tests/Release/asjitx86_benchmark.exe"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          & "build/${{ matrix.linkage }}/tests/Release/asjitx86_showcase.exe"
+          exit $LASTEXITCODE
+
+  linux:
+    name: Linux i386 ${{ matrix.linkage }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - linkage: shared
+            build_shared: ON
+          - linkage: static
+            build_shared: OFF
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Install i386 toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends gcc-multilib g++-multilib
+
+      - name: Configure
+        run: >-
+          cmake -S . -B build/${{ matrix.linkage }}
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_C_FLAGS=-m32
+          -DCMAKE_CXX_FLAGS=-m32
+          -DASJITX86_BUILD_SHARED=${{ matrix.build_shared }}
+          -DASJITX86_BUILD_TESTS=ON
+
+      - name: Build
+        run: cmake --build build/${{ matrix.linkage }} --parallel
+
+      - name: Run complete test suite
+        shell: bash
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PWD/build/${{ matrix.linkage }}:${LD_LIBRARY_PATH:-}"
+          timeout 10m ctest --test-dir build/${{ matrix.linkage }} --output-on-failure
+          timeout 10m build/${{ matrix.linkage }}/tests/asjitx86_benchmark
+          timeout 10m build/${{ matrix.linkage }}/tests/asjitx86_showcase
