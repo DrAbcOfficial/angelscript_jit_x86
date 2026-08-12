@@ -434,13 +434,15 @@ EmitResult FunctionEmitter::EmitNumeric(size_t index,
         return EmitResult::Success;
     }
     case asBC_CMPi:
-    case asBC_CMPIi: {
+    case asBC_CMPIi:
+    case asBC_CmpPtr: {
         if (kInlineCmp6c) {
             const int left = asBC_SWORDARG0(ip);
             x86::Gp x = cc.new_gp32("x");
             LoadVar(left, x);
             x86::Gp y = cc.new_gp32("y");
-            if (instruction.op == asBC_CMPi) {
+            if (instruction.op == asBC_CMPi ||
+                instruction.op == asBC_CmpPtr) {
                 LoadVar(asBC_SWORDARG1(ip), y);
                 cc.cmp(x, y);
             } else {
@@ -459,16 +461,28 @@ EmitResult FunctionEmitter::EmitNumeric(size_t index,
                     cc.jnz(labels_[static_cast<size_t>(targetIndex)]);
                     break;
                 case asBC_JS:
-                    cc.js(labels_[static_cast<size_t>(targetIndex)]);
+                    if (instruction.op == asBC_CmpPtr)
+                        cc.jb(labels_[static_cast<size_t>(targetIndex)]);
+                    else
+                        cc.js(labels_[static_cast<size_t>(targetIndex)]);
                     break;
                 case asBC_JNS:
-                    cc.jns(labels_[static_cast<size_t>(targetIndex)]);
+                    if (instruction.op == asBC_CmpPtr)
+                        cc.jae(labels_[static_cast<size_t>(targetIndex)]);
+                    else
+                        cc.jns(labels_[static_cast<size_t>(targetIndex)]);
                     break;
                 case asBC_JP:
-                    cc.jg(labels_[static_cast<size_t>(targetIndex)]);
+                    if (instruction.op == asBC_CmpPtr)
+                        cc.ja(labels_[static_cast<size_t>(targetIndex)]);
+                    else
+                        cc.jg(labels_[static_cast<size_t>(targetIndex)]);
                     break;
                 case asBC_JNP:
-                    cc.jle(labels_[static_cast<size_t>(targetIndex)]);
+                    if (instruction.op == asBC_CmpPtr)
+                        cc.jbe(labels_[static_cast<size_t>(targetIndex)]);
+                    else
+                        cc.jle(labels_[static_cast<size_t>(targetIndex)]);
                     break;
                 case asBC_JLowZ:
                     cc.jz(labels_[static_cast<size_t>(targetIndex)]);
@@ -484,8 +498,14 @@ EmitResult FunctionEmitter::EmitNumeric(size_t index,
                                regs_, offsetof(asSVMRegisters, valueRegister)),
                            fusedFallValue_[index]);
             } else {
-                cc.set(x86::CondCode::kSignedGT, x);
-                cc.set(x86::CondCode::kSignedLT, y);
+                cc.set(instruction.op == asBC_CmpPtr
+                           ? x86::CondCode::kUnsignedGT
+                           : x86::CondCode::kSignedGT,
+                       x);
+                cc.set(instruction.op == asBC_CmpPtr
+                           ? x86::CondCode::kUnsignedLT
+                           : x86::CondCode::kSignedLT,
+                       y);
                 cc.movzx(x, x.r8());
                 cc.movzx(y, y.r8());
                 cc.sub(x, y);

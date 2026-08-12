@@ -14,19 +14,20 @@ namespace asjitx86::emit {
 namespace {
 
 void FastReleaseScriptObject(void* object) {
-    static_cast<asCScriptObject*>(object)->Release();
+    static_cast<asCScriptObject*>(object)->asCScriptObject::Release();
 }
 
 void FastRefCopyScriptObject(void** destination, void* source) {
     auto* current = static_cast<asCScriptObject*>(*destination);
-    if (current) current->Release();
-    if (source) static_cast<asCScriptObject*>(source)->AddRef();
+    if (current) current->asCScriptObject::Release();
+    if (source)
+        static_cast<asCScriptObject*>(source)->asCScriptObject::AddRef();
     *destination = source;
 }
 
 void FastMoveScriptObject(void** destination, void** source) {
     auto* current = static_cast<asCScriptObject*>(*destination);
-    if (current) current->Release();
+    if (current) current->asCScriptObject::Release();
     *destination = *source;
     *source = nullptr;
 }
@@ -47,6 +48,17 @@ void FastMoveScriptFunction(void** destination, void** source) {
     if (current) current->Release();
     *destination = *source;
     *source = nullptr;
+}
+
+bool TryScriptObjectCast(void* object, asCObjectType* targetType) {
+    auto* scriptObject = static_cast<asCScriptObject*>(object);
+    auto* objectType = static_cast<asCObjectType*>(
+        scriptObject->asCScriptObject::GetObjectType());
+    if (objectType != targetType && !objectType->Implements(targetType) &&
+        !objectType->DerivesFrom(targetType))
+        return false;
+    scriptObject->asCScriptObject::AddRef();
+    return true;
 }
 
 }
@@ -280,6 +292,50 @@ EmitResult FunctionEmitter::EmitReferences(
         if (err != kErrorOk) return EmitResult::Error;
         invocation->set_arg(0, destination);
         invocation->set_arg(1, source);
+        cc.mov(x86::dword_ptr(regs_, ppOff),
+               Imm(int64_t((intptr_t)(ip + instruction.size))));
+        return EmitResult::Success;
+    }
+    case asBC_Cast: {
+        auto* targetType = engine_->GetObjectTypeFromTypeId(
+            static_cast<int>(asBC_DWORDARG(ip)));
+        if (!targetType || !(targetType->flags & asOBJ_SCRIPT_OBJECT))
+            return EmitResult::Unhandled;
+
+        x86::Gp sp = cc.new_gp32("castSp");
+        x86::Gp sourceSlot = cc.new_gp32("castSourceSlot");
+        x86::Gp source = cc.new_gp32("castSource");
+        Label handled = cc.new_label();
+        LoadSp(sp);
+        cc.mov(sourceSlot, x86::dword_ptr(sp));
+        cc.test(sourceSlot, sourceSlot);
+        cc.jz(handled);
+        cc.mov(source, x86::dword_ptr(sourceSlot));
+        cc.test(source, source);
+        cc.jz(handled);
+
+        InvokeNode* invocation = nullptr;
+        Error err = cc.invoke(
+            Out<InvokeNode*>(invocation),
+            Imm(int64_t((intptr_t)&TryScriptObjectCast)),
+            FuncSignature::build<bool, void*, asCObjectType*>());
+        if (err != kErrorOk) return EmitResult::Error;
+        x86::Gp matched = cc.new_gp32("castMatched");
+        invocation->set_arg(0, source);
+        invocation->set_arg(1, Imm(int64_t((intptr_t)targetType)));
+        invocation->set_ret(0, matched);
+        cc.test(matched.r8(), matched.r8());
+        cc.jz(handled);
+        cc.mov(x86::dword_ptr(
+                   regs_, offsetof(asSVMRegisters, objectType)),
+               0);
+        cc.mov(x86::dword_ptr(
+                   regs_, offsetof(asSVMRegisters, objectRegister)),
+               source);
+
+        cc.bind(handled);
+        cc.add(sp, AS_PTR_SIZE * 4);
+        StoreSp(sp);
         cc.mov(x86::dword_ptr(regs_, ppOff),
                Imm(int64_t((intptr_t)(ip + instruction.size))));
         return EmitResult::Success;

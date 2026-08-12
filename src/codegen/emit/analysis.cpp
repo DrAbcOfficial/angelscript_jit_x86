@@ -291,7 +291,8 @@ bool FunctionEmitter::AnalyzeComparisonBranchFusions() {
 
     for (size_t i = 0; i + 2 < instructions_.size(); i++) {
         if ((instructions_[i].op != asBC_CMPi &&
-             instructions_[i].op != asBC_CMPIi) ||
+             instructions_[i].op != asBC_CMPIi &&
+             instructions_[i].op != asBC_CmpPtr) ||
             !IsConditionalBranch(instructions_[i + 1].op) ||
             needsLabel_[i + 1])
             continue;
