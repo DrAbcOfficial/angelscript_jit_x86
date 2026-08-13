@@ -17,6 +17,8 @@ int BcJitEntry(asSVMRegisters* regs, const asDWORD* bc);
 int BcCall(asSVMRegisters* regs, const asDWORD* bc);
 int BcRet(asSVMRegisters* regs, const asDWORD* bc);
 int BcCallSys(asSVMRegisters* regs, const asDWORD* bc);
+bool CanUseFastSystemCall(asCScriptFunction* function);
+int FastSystemCall(asSVMRegisters* regs, asCScriptFunction* function);
 int FinishSystemCall(asSVMRegisters* regs);
 int FinishSystemCallAt(asSVMRegisters* regs, asCScriptFunction* function,
                        const asDWORD* catchBc);

@@ -1,8 +1,10 @@
 #include "bytecode/helpers/runtime_helpers.h"
 #include "bytecode/helpers/helper_context.h"
 
+#include "as_callfunc.h"
 #include "as_objecttype.h"
 #include "as_scriptengine.h"
+#include "as_scriptfunction.h"
 #include "as_scriptobject.h"
 #include "as_texts.h"
 
@@ -13,6 +15,145 @@
 namespace asjitx86::detail {
 
 namespace {
+
+#if defined(_MSC_VER)
+#define ASJITX86_CDECL __cdecl
+#define ASJITX86_STDCALL __stdcall
+#define ASJITX86_THISCALL __thiscall
+#elif defined(__GNUC__) && defined(__i386__)
+#define ASJITX86_CDECL __attribute__((cdecl))
+#define ASJITX86_STDCALL __attribute__((stdcall))
+#define ASJITX86_THISCALL __attribute__((thiscall))
+#else
+#define ASJITX86_CDECL
+#define ASJITX86_STDCALL
+#define ASJITX86_THISCALL
+#endif
+
+template <typename Return>
+Return InvokeCdecl(asFUNCTION_t function, const asDWORD* arguments,
+                   int argumentCount) {
+    const asPWORD address = FuncPtrToUInt(function);
+    switch (argumentCount) {
+    case 0:
+        return reinterpret_cast<Return(ASJITX86_CDECL*)()>(address)();
+    case 1:
+        return reinterpret_cast<Return(ASJITX86_CDECL*)(asDWORD)>(address)(
+            arguments[0]);
+    case 2:
+        return reinterpret_cast<Return(ASJITX86_CDECL*)(asDWORD, asDWORD)>(
+            address)(arguments[0], arguments[1]);
+    case 3:
+        return reinterpret_cast<
+            Return(ASJITX86_CDECL*)(asDWORD, asDWORD, asDWORD)>(address)(
+            arguments[0], arguments[1], arguments[2]);
+    default:
+        return reinterpret_cast<
+            Return(ASJITX86_CDECL*)(asDWORD, asDWORD, asDWORD, asDWORD)>(
+            address)(arguments[0], arguments[1], arguments[2], arguments[3]);
+    }
+}
+
+template <typename Return>
+Return InvokeStdcall(asFUNCTION_t function, const asDWORD* arguments,
+                     int argumentCount) {
+    const asPWORD address = FuncPtrToUInt(function);
+    switch (argumentCount) {
+    case 0:
+        return reinterpret_cast<Return(ASJITX86_STDCALL*)()>(address)();
+    case 1:
+        return reinterpret_cast<Return(ASJITX86_STDCALL*)(asDWORD)>(address)(
+            arguments[0]);
+    case 2:
+        return reinterpret_cast<Return(ASJITX86_STDCALL*)(asDWORD, asDWORD)>(
+            address)(arguments[0], arguments[1]);
+    case 3:
+        return reinterpret_cast<
+            Return(ASJITX86_STDCALL*)(asDWORD, asDWORD, asDWORD)>(address)(
+            arguments[0], arguments[1], arguments[2]);
+    default:
+        return reinterpret_cast<
+            Return(ASJITX86_STDCALL*)(asDWORD, asDWORD, asDWORD, asDWORD)>(
+            address)(arguments[0], arguments[1], arguments[2], arguments[3]);
+    }
+}
+
+template <typename Return>
+Return InvokeObjectCdecl(asFUNCTION_t function, void* object,
+                         const asDWORD* arguments, int argumentCount,
+                         bool objectFirst);
+
+template <typename Return>
+Return InvokeThiscall(asFUNCTION_t function, void* object,
+                      const asDWORD* arguments, int argumentCount) {
+#if !defined(THISCALL_PASS_OBJECT_POINTER_ON_THE_STACK)
+    const asPWORD address = FuncPtrToUInt(function);
+    switch (argumentCount) {
+    case 0:
+        return reinterpret_cast<Return(ASJITX86_THISCALL*)(void*)>(address)(
+            object);
+    case 1:
+        return reinterpret_cast<
+            Return(ASJITX86_THISCALL*)(void*, asDWORD)>(address)(
+            object, arguments[0]);
+    case 2:
+        return reinterpret_cast<
+            Return(ASJITX86_THISCALL*)(void*, asDWORD, asDWORD)>(address)(
+            object, arguments[0], arguments[1]);
+    case 3:
+        return reinterpret_cast<
+            Return(ASJITX86_THISCALL*)(void*, asDWORD, asDWORD, asDWORD)>(
+            address)(object, arguments[0], arguments[1], arguments[2]);
+    default:
+        return reinterpret_cast<
+            Return(ASJITX86_THISCALL*)(void*, asDWORD, asDWORD, asDWORD,
+                                      asDWORD)>(address)(
+            object, arguments[0], arguments[1], arguments[2], arguments[3]);
+    }
+#else
+    return InvokeObjectCdecl<Return>(function, object, arguments,
+                                     argumentCount, true);
+#endif
+}
+
+template <typename Return>
+Return InvokeObjectCdecl(asFUNCTION_t function, void* object,
+                         const asDWORD* arguments, int argumentCount,
+                         bool objectFirst) {
+    asDWORD combined[5];
+    if (objectFirst) {
+        combined[0] = static_cast<asDWORD>(reinterpret_cast<asPWORD>(object));
+        for (int index = 0; index < argumentCount; index++)
+            combined[index + 1] = arguments[index];
+    } else {
+        for (int index = 0; index < argumentCount; index++)
+            combined[index] = arguments[index];
+        combined[argumentCount] =
+            static_cast<asDWORD>(reinterpret_cast<asPWORD>(object));
+    }
+    return InvokeCdecl<Return>(function, combined, argumentCount + 1);
+}
+
+template <typename Return>
+Return InvokeSimpleSystemFunction(asSSystemFunctionInterface* system,
+                                  void* object, const asDWORD* arguments) {
+    switch (system->callConv) {
+    case ICC_CDECL:
+        return InvokeCdecl<Return>(system->func, arguments, system->paramSize);
+    case ICC_STDCALL:
+        return InvokeStdcall<Return>(system->func, arguments,
+                                     system->paramSize);
+    case ICC_THISCALL:
+        return InvokeThiscall<Return>(system->func, object, arguments,
+                                      system->paramSize);
+    case ICC_CDECL_OBJFIRST:
+        return InvokeObjectCdecl<Return>(system->func, object, arguments,
+                                         system->paramSize, true);
+    default:
+        return InvokeObjectCdecl<Return>(system->func, object, arguments,
+                                         system->paramSize, false);
+    }
+}
 
 void PrepareScriptCall(asCContext* ctx, asCScriptFunction* function) {
     assert(function->scriptData);
@@ -135,6 +276,119 @@ int BcCallSys(asSVMRegisters* regs, const asDWORD* bc) {
     regs->stackPointer += CallSystemFunction(i, ctx);
     regs->programPointer = NextBc(bc, 2);
     return regs->doProcessSuspend ? FinishSystemCall(regs) : JITBC_CONTINUE;
+}
+
+bool CanUseFastSystemCall(asCScriptFunction* function) {
+    if (!function || function->funcType != asFUNC_SYSTEM ||
+        !function->sysFuncIntf || function->DoesReturnOnStack())
+        return false;
+
+    const asSSystemFunctionInterface* system = function->sysFuncIntf;
+    const bool objectCdecl =
+        system->callConv == ICC_CDECL_OBJFIRST ||
+        system->callConv == ICC_CDECL_OBJLAST;
+#if defined(THISCALL_PASS_OBJECT_POINTER_ON_THE_STACK)
+    const bool stackObjectThiscall = system->callConv == ICC_THISCALL;
+#else
+    const bool stackObjectThiscall = false;
+#endif
+    if (system->callConv == ICC_GENERIC_FUNC ||
+        system->callConv == ICC_GENERIC_METHOD || system->takesObjByVal ||
+        system->returnAutoHandle || system->cleanArgs.GetLength() != 0 ||
+        system->hostReturnInMemory || system->hostReturnFloat ||
+        system->hostReturnSize > 2 || system->paramSize > 4 ||
+        ((objectCdecl || stackObjectThiscall) && system->paramSize > 3))
+        return false;
+
+    if ((function->returnType.IsObject() ||
+         function->returnType.IsFuncdef()) &&
+        !function->returnType.IsReference() &&
+        !function->returnType.IsObjectHandle())
+        return false;
+
+    switch (system->callConv) {
+    case ICC_CDECL:
+    case ICC_STDCALL:
+    case ICC_THISCALL:
+    case ICC_CDECL_OBJLAST:
+    case ICC_CDECL_OBJFIRST:
+        return true;
+    default:
+        return false;
+    }
+}
+
+int FastSystemCall(asSVMRegisters* regs, asCScriptFunction* function) {
+    auto* ctx = Ctx(regs);
+    asSSystemFunctionInterface* system = function->sysFuncIntf;
+    asDWORD* arguments = regs->stackPointer;
+    int popDwords = system->paramSize;
+    void* object = nullptr;
+
+    if (system->callConv >= ICC_THISCALL) {
+        if (system->auxiliary) {
+            object = system->auxiliary;
+        } else {
+            popDwords += AS_PTR_SIZE;
+            object = reinterpret_cast<void*>(
+                *reinterpret_cast<asPWORD*>(arguments));
+            if (!object) {
+                ctx->SetInternalException(TXT_NULL_POINTER_ACCESS);
+                return 0;
+            }
+            arguments += AS_PTR_SIZE;
+        }
+
+        object = reinterpret_cast<void*>(
+            reinterpret_cast<asPWORD>(object) + system->baseOffset);
+    }
+
+    if (object) {
+        object = static_cast<char*>(object) + system->compositeOffset;
+        if (system->isCompositeIndirect)
+            object = *static_cast<void**>(object);
+    }
+
+    regs->objectType = function->returnType.GetTypeInfo();
+    ctx->m_callingSystemFunction = function;
+    asQWORD result = 0;
+#ifdef AS_NO_EXCEPTIONS
+    if (system->hostReturnSize == 0)
+        InvokeSimpleSystemFunction<void>(system, object, arguments);
+    else if (system->hostReturnSize == 1)
+        result = InvokeSimpleSystemFunction<asDWORD>(
+            system, object, arguments);
+    else
+        result = InvokeSimpleSystemFunction<asQWORD>(
+            system, object, arguments);
+#else
+    try {
+        if (system->hostReturnSize == 0)
+            InvokeSimpleSystemFunction<void>(system, object, arguments);
+        else if (system->hostReturnSize == 1)
+            result = InvokeSimpleSystemFunction<asDWORD>(
+                system, object, arguments);
+        else
+            result = InvokeSimpleSystemFunction<asQWORD>(
+                system, object, arguments);
+    } catch (...) {
+        ctx->HandleAppException();
+    }
+#endif
+    ctx->m_callingSystemFunction = nullptr;
+
+    if ((function->returnType.IsObject() ||
+         function->returnType.IsFuncdef()) &&
+        !function->returnType.IsReference()) {
+        regs->objectRegister = reinterpret_cast<void*>(
+            static_cast<asPWORD>(result));
+    } else if (system->hostReturnSize == 1) {
+        *reinterpret_cast<asDWORD*>(&regs->valueRegister) =
+            static_cast<asDWORD>(result);
+    } else {
+        regs->valueRegister = result;
+    }
+    return popDwords;
 }
 
 int FinishSystemCall(asSVMRegisters* regs) {

@@ -1078,21 +1078,40 @@ EmitResult FunctionEmitter::EmitCalls(size_t index,
                               declaration->vfTableIdx);
     }
     case asBC_CALLSYS: {
-        x86::Gp context = cc.new_gp32("context");
+        auto* target = engine_->scriptFunctions[asBC_INTARG(ip)];
+        const bool fastSystemCall = detail::CanUseFastSystemCall(target);
         x86::Gp popDwords = cc.new_gp32("popDwords");
         cc.mov(x86::dword_ptr(regs_, ppOff),
                Imm(int64_t((intptr_t)ip)));
-        cc.mov(context,
-               x86::dword_ptr(regs_, offsetof(asSVMRegisters, ctx)));
 
+        x86::Gp context;
+        if (!fastSystemCall) {
+            context = cc.new_gp32("context");
+            cc.mov(context,
+                   x86::dword_ptr(regs_, offsetof(asSVMRegisters, ctx)));
+        }
         InvokeNode* invocation = nullptr;
-        Error err = cc.invoke(
-            Out<InvokeNode*>(invocation),
-            Imm(int64_t((intptr_t)&CallSystemFunction)),
-            FuncSignature::build<int, int, asCContext*>());
+        Error err;
+        if (fastSystemCall) {
+            err = cc.invoke(
+                Out<InvokeNode*>(invocation),
+                Imm(int64_t((intptr_t)&detail::FastSystemCall)),
+                FuncSignature::build<int, asSVMRegisters*,
+                                     asCScriptFunction*>());
+        } else {
+            err = cc.invoke(
+                Out<InvokeNode*>(invocation),
+                Imm(int64_t((intptr_t)&CallSystemFunction)),
+                FuncSignature::build<int, int, asCContext*>());
+        }
         if (err != kErrorOk) return EmitResult::Error;
-        invocation->set_arg(0, asBC_INTARG(ip));
-        invocation->set_arg(1, context);
+        if (fastSystemCall) {
+            invocation->set_arg(0, regs_);
+            invocation->set_arg(1, Imm(int64_t((intptr_t)target)));
+        } else {
+            invocation->set_arg(0, asBC_INTARG(ip));
+            invocation->set_arg(1, context);
+        }
         invocation->set_ret(0, popDwords);
 
         x86::Gp sp = cc.new_gp32("sp");
