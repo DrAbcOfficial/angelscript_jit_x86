@@ -518,7 +518,9 @@ int BcCallPtr(asSVMRegisters* regs, const asDWORD* bc) {
         }
     }
     else if (func->funcType == asFUNC_SYSTEM) {
-        regs->stackPointer += CallSystemFunction(func->id, ctx);
+        regs->stackPointer += CanUseFastSystemCall(func)
+                                   ? FastSystemCall(regs, func)
+                                   : CallSystemFunction(func->id, ctx);
         regs->programPointer++;
         systemCall = true;
     }
