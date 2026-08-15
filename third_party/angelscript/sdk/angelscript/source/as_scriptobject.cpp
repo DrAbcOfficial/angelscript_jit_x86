@@ -676,6 +676,30 @@ bool asCScriptObject::ReleaseScalarOnlyWithoutFree() const
 	return true;
 }
 
+bool asCScriptObject::ReleaseScalarWithGlobalDestructorWithoutFree(asDWORD *globalAddress, int delta) const
+{
+	// The JIT only uses this for a non-GC scalar type whose sole script
+	// destructor is a single global integer increment or decrement.
+	if( refCount.get() != 1 || extra || isDestructCalled ||
+		hasRefCountReachedZero )
+	{
+		Release();
+		return false;
+	}
+
+	gcFlag = false;
+	*globalAddress += asDWORD(delta);
+	const_cast<asCScriptObject*>(this)->isDestructCalled = true;
+	int r = refCount.atomicDec();
+	if( r != 0 )
+		return false;
+
+	hasRefCountReachedZero = true;
+	asCObjectType *type = objType;
+	type->Release();
+	return true;
+}
+
 void asCScriptObject::CallDestructor()
 {
 	// Only allow the destructor to be called once

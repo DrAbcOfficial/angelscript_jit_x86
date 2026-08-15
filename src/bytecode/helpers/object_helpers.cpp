@@ -1,8 +1,10 @@
 #include "bytecode/helpers/object_helpers.h"
+#include "bytecode/bc_info.h"
 #include "bytecode/helpers/helper_context.h"
 #include "bytecode/helpers/runtime_helpers.h"
 
 #include "as_scriptengine.h"
+#include "as_scriptfunction.h"
 #include "as_scriptobject.h"
 #include "as_property.h"
 #include "as_texts.h"
@@ -43,6 +45,26 @@ bool IsPoolOwner(ScalarObjectPoolBucket* bucket) {
     return bucket->owner.compare_exchange_strong(
         owner, token, std::memory_order_acq_rel,
         std::memory_order_acquire);
+}
+
+bool HasScalarProperties(asCObjectType* objectType) {
+    for (asUINT index = 0; index < objectType->properties.GetLength();
+         index++) {
+        const asCDataType& type = objectType->properties[index]->type;
+        if (type.IsObject() || type.IsFuncdef()) return false;
+    }
+    return true;
+}
+
+void CacheReleasedObject(void* object, ScalarObjectPoolBucket* bucket) {
+    const bool pooled = IsPoolOwner(bucket) && bucket->count < 64;
+    if (pooled) {
+        *static_cast<void**>(object) = bucket->head;
+        bucket->head = object;
+        bucket->count++;
+    } else {
+        bucket->engine->CallFree(object);
+    }
 }
 
 }
@@ -92,12 +114,57 @@ bool IsScalarOnlyScriptObject(asCObjectType* objectType) {
     for (asCObjectType* type = objectType; type; type = type->derivedFrom) {
         if (type->beh.destruct) return false;
     }
-    for (asUINT index = 0; index < objectType->properties.GetLength();
-         index++) {
-        const asCDataType& type = objectType->properties[index]->type;
-        if (type.IsObject() || type.IsFuncdef()) return false;
+    return HasScalarProperties(objectType);
+}
+
+bool DecodePooledGlobalDestructor(asCObjectType* objectType,
+                                  asDWORD*& globalAddress, int& delta) {
+    globalAddress = nullptr;
+    delta = 0;
+    if (!objectType || (objectType->flags & asOBJ_GC) ||
+        !HasScalarProperties(objectType))
+        return false;
+
+    asCScriptFunction* destructor = nullptr;
+    for (asCObjectType* type = objectType; type; type = type->derivedFrom) {
+        if (!type->beh.destruct) continue;
+        if (destructor) return false;
+        destructor = objectType->engine->scriptFunctions[type->beh.destruct];
     }
-    return true;
+    if (!destructor || destructor->funcType != asFUNC_SCRIPT ||
+        !destructor->scriptData || destructor->DoesReturnOnStack() ||
+        destructor->scriptData->tryCatchInfo.GetLength())
+        return false;
+
+    asUINT length = 0;
+    asDWORD* bytecode = destructor->GetByteCode(&length);
+    if (!bytecode || !length) return false;
+    unsigned stage = 0;
+    for (asUINT offset = 0; offset < length;) {
+        const asDWORD* ip = bytecode + offset;
+        const auto op = static_cast<asEBCInstr>(*ip & 0xFF);
+        const int size = BcSize(op);
+        if (size <= 0 || offset + static_cast<asUINT>(size) > length)
+            return false;
+        if (op == asBC_JitEntry) {
+            offset += static_cast<asUINT>(size);
+            continue;
+        }
+        if (stage == 0 && op == asBC_LDG) {
+            globalAddress = reinterpret_cast<asDWORD*>(asBC_PTRARG(ip));
+            stage = 1;
+        } else if (stage == 1 && (op == asBC_INCi || op == asBC_DECi)) {
+            delta = op == asBC_INCi ? 1 : -1;
+            stage = 2;
+        } else if (stage == 2 && op == asBC_RET &&
+                   asBC_WORDARG0(ip) == AS_PTR_SIZE) {
+            stage = 3;
+        } else {
+            return false;
+        }
+        offset += static_cast<asUINT>(size);
+    }
+    return stage == 3 && globalAddress;
 }
 
 void* CreatePooledScriptObject(ScalarObjectPoolBucket* bucket) {
@@ -126,13 +193,24 @@ void ReleasePooledScriptObject(void* object,
     if (!scriptObject->asCScriptObject::ReleaseScalarOnlyWithoutFree())
         return;
 
-    const bool pooled = IsPoolOwner(bucket) && bucket->count < 64;
-    if (pooled) {
-        *static_cast<void**>(object) = bucket->head;
-        bucket->head = object;
-        bucket->count++;
+    CacheReleasedObject(object, bucket);
+}
+
+void ReleasePooledScriptObjectWithGlobalDestructor(
+    void* object, ScalarObjectPoolBucket* bucket, asSVMRegisters* regs,
+    asDWORD* globalAddress, int delta) {
+    auto* scriptObject = static_cast<asCScriptObject*>(object);
+    if (scriptObject->asCScriptObject::GetObjectType() !=
+            bucket->objectType ||
+        regs->doProcessSuspend) {
+        scriptObject->asCScriptObject::Release();
+        return;
     }
-    if (!pooled) bucket->engine->CallFree(object);
+    if (!scriptObject->asCScriptObject::
+            ReleaseScalarWithGlobalDestructorWithoutFree(globalAddress,
+                                                          delta))
+        return;
+    CacheReleasedObject(object, bucket);
 }
 
 int AllocScriptObject(asSVMRegisters* regs, asCObjectType* objectType,

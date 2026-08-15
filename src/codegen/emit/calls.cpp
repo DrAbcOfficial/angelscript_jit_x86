@@ -464,7 +464,13 @@ EmitResult FunctionEmitter::EmitCalls(size_t index,
                                       const x86::Gp& object) -> bool {
         InvokeNode* invocation = nullptr;
         Error err;
-        if (detail::IsScalarOnlyScriptObject(objectType)) {
+        asDWORD* destructorGlobal = nullptr;
+        int destructorDelta = 0;
+        const bool pooledGlobalDestructor =
+            detail::DecodePooledGlobalDestructor(
+                objectType, destructorGlobal, destructorDelta);
+        if (detail::IsScalarOnlyScriptObject(objectType) ||
+            pooledGlobalDestructor) {
             auto* bucket = objectPool_.GetBucket(objectType);
             err = cc.invoke(
                 Out<InvokeNode*>(invocation),

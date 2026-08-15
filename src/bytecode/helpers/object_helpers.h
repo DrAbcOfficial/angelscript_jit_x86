@@ -25,9 +25,14 @@ private:
 };
 
 bool IsScalarOnlyScriptObject(asCObjectType* objectType);
+bool DecodePooledGlobalDestructor(asCObjectType* objectType,
+                                  asDWORD*& globalAddress, int& delta);
 void* CreatePooledScriptObject(ScalarObjectPoolBucket* bucket);
 void ReleasePooledScriptObject(void* object,
                                ScalarObjectPoolBucket* bucket);
+void ReleasePooledScriptObjectWithGlobalDestructor(
+    void* object, ScalarObjectPoolBucket* bucket, asSVMRegisters* regs,
+    asDWORD* globalAddress, int delta);
 
 int BcAlloc(asSVMRegisters* regs, const asDWORD* bc);
 int AllocScriptObject(asSVMRegisters* regs, asCObjectType* objectType,

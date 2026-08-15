@@ -170,6 +170,11 @@ EmitResult FunctionEmitter::EmitReferences(
             (objectType->flags & asOBJ_FUNCDEF) != 0;
         const bool scalarOnlyObject =
             scriptObject && detail::IsScalarOnlyScriptObject(objectType);
+        asDWORD* destructorGlobal = nullptr;
+        int destructorDelta = 0;
+        const bool pooledGlobalDestructor =
+            scriptObject && detail::DecodePooledGlobalDestructor(
+                objectType, destructorGlobal, destructorDelta);
         if (!scriptObject && !functionObject) {
             if (!EmitHelperCall(instruction, ip)) return EmitResult::Error;
             return EmitResult::Success;
@@ -186,16 +191,34 @@ EmitResult FunctionEmitter::EmitReferences(
         cc.mov(x86::dword_ptr(regs_, ppOff),
                Imm(int64_t((intptr_t)ip)));
         Error err;
-        if (scalarOnlyObject) {
+        if (scalarOnlyObject || pooledGlobalDestructor) {
             auto* bucket = objectPool_.GetBucket(objectType);
-            err = cc.invoke(
-                Out<InvokeNode*>(invocation),
-                Imm(int64_t((intptr_t)&detail::ReleasePooledScriptObject)),
-                FuncSignature::build<void, void*,
-                                     detail::ScalarObjectPoolBucket*>());
-            if (err == kErrorOk)
+            if (pooledGlobalDestructor) {
+                err = cc.invoke(
+                    Out<InvokeNode*>(invocation),
+                    Imm(int64_t((intptr_t)&detail::
+                        ReleasePooledScriptObjectWithGlobalDestructor)),
+                    FuncSignature::build<
+                        void, void*, detail::ScalarObjectPoolBucket*,
+                        asSVMRegisters*, asDWORD*, int>());
+                if (err == kErrorOk) {
+                    invocation->set_arg(2, regs_);
+                    invocation->set_arg(
+                        3, Imm(int64_t((intptr_t)destructorGlobal)));
+                    invocation->set_arg(4, destructorDelta);
+                }
+            } else {
+                err = cc.invoke(
+                    Out<InvokeNode*>(invocation),
+                    Imm(int64_t((intptr_t)&detail::
+                        ReleasePooledScriptObject)),
+                    FuncSignature::build<
+                        void, void*, detail::ScalarObjectPoolBucket*>());
+            }
+            if (err == kErrorOk) {
                 invocation->set_arg(
                     1, Imm(int64_t((intptr_t)bucket)));
+            }
         } else {
             err = cc.invoke(
                 Out<InvokeNode*>(invocation),

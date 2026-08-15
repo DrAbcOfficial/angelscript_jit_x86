@@ -125,6 +125,7 @@ public:
 
 	void CallDestructor();
 	bool ReleaseScalarOnlyWithoutFree() const;
+	bool ReleaseScalarWithGlobalDestructorWithoutFree(asDWORD *globalAddress, int delta) const;
 
 //=============================================
 // Properties
