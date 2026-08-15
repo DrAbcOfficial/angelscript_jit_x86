@@ -2,6 +2,7 @@
 #include "angelscript.h"
 #include "scriptarray.h"
 #include "scriptbuilder.h"
+#include "scriptdictionary.h"
 #include "scriptstdstring.h"
 
 #include <cstdio>
@@ -81,6 +82,7 @@ void RaiseError() {
 void RegisterAll(asIScriptEngine* engine) {
     RegisterStdString(engine);
     RegisterScriptArray(engine, true);
+    RegisterScriptDictionary(engine);
 
     int r = engine->RegisterGlobalFunction("string itos(int)", asFUNCTION(Itos), asCALL_CDECL);
     if (r < 0) std::printf("itos failed: %d\n", r);
@@ -271,7 +273,7 @@ int main(int argc, char** argv) {
         "arith.as", "branch.as", "funcs.as", "class.as", "sys.as", "except.as", "string.as",
         "globals.as", "statements_extra.as", "types.as", "functions_advanced.as",
         "classes_advanced.as", "operators.as", "handles.as", "lifetime_refs.as",
-        "shared_mixin.as", "funcptr_fallback.as",
+        "dictionary_handles.as", "shared_mixin.as", "funcptr_fallback.as",
     };
 
     bool jitActive = false;

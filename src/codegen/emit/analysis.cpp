@@ -358,11 +358,16 @@ void FunctionEmitter::AnalyzeReferenceCopyFusions() {
             !needsLabel_[i + 2]) {
             span = 3;
         } else if (i + 3 < instructions_.size() &&
-                   instructions_[i + 2].op == asBC_FREE &&
-                   instructions_[i + 3].op == asBC_PopPtr &&
+                   ((instructions_[i + 2].op == asBC_FREE &&
+                     instructions_[i + 3].op == asBC_PopPtr) ||
+                    (instructions_[i + 2].op == asBC_PopPtr &&
+                     instructions_[i + 3].op == asBC_FREE)) &&
                    !needsLabel_[i + 2] && !needsLabel_[i + 3]) {
             const asDWORD* push = bytecode_ + instructions_[i].off;
-            const asDWORD* release = bytecode_ + instructions_[i + 2].off;
+            const size_t releaseIndex =
+                instructions_[i + 2].op == asBC_FREE ? i + 2 : i + 3;
+            const asDWORD* release =
+                bytecode_ + instructions_[releaseIndex].off;
             if (asBC_SWORDARG0(push) != asBC_SWORDARG0(release) ||
                 asBC_SWORDARG0(push) == asBC_SWORDARG0(copy) ||
                 asBC_PTRARG(copy) != asBC_PTRARG(release))
