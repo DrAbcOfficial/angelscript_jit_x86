@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <vector>
 
 namespace {
 
@@ -737,6 +738,222 @@ int main()
 }
 )AS";
 
+const char* kDataNumeric = R"AS(
+uint nextNumericState(uint value)
+{
+    value ^= value << 13;
+    value ^= value >>> 17;
+    value ^= value << 5;
+    return value;
+}
+
+int main(uint seed)
+{
+    uint state = seed ^ 0xA5A5A5A5;
+    int checksum = int(seed);
+    int64 signedWide = int64(int(seed));
+    uint64 unsignedWide = uint64(seed) | 1;
+    for (int i = 0; i < 120000; i++)
+    {
+        state = nextNumericState(state + uint(i) + 0x9E3779B9);
+        int signedValue = int(state);
+        uint shift = state & 31;
+        int8 narrowSigned = int8(state & 0xFF);
+        uint8 narrowUnsigned = uint8(state & 0xFF);
+        int16 mediumSigned = int16((state >>> 8) & 0xFFFF);
+        uint16 mediumUnsigned = uint16((state >>> 8) & 0xFFFF);
+
+        checksum += int(narrowSigned) + int(narrowUnsigned);
+        checksum ^= int(mediumSigned) - int(mediumUnsigned);
+        checksum += (signedValue >> shift) & 0x7FFF;
+        checksum ^= int((state >>> shift) & 0xFFFF);
+
+        signedWide += int64(signedValue);
+        signedWide ^= int64(state & 0xFFFF) << uint(state & 15);
+        unsignedWide = (unsignedWide << 7) ^ uint64(state);
+        unsignedWide += uint64(state >>> 3);
+        checksum ^= int(signedWide & 0x7FFFFFFF);
+        checksum += int(unsignedWide & 0xFFFF);
+
+        float exactFloat = float(int(state & 2047) - 1024) * 0.25f;
+        double exactDouble = double(int((state >>> 11) & 2047) - 1024) * 0.125;
+        if (exactFloat < -32.0f) checksum += 3;
+        else if (exactFloat == 0.0f) checksum += 5;
+        else checksum += 7;
+        if (exactDouble >= 64.0) checksum ^= 11;
+        checksum += int(exactFloat) + int(exactDouble);
+    }
+    return checksum;
+}
+)AS";
+
+const char* kDataControlFlow = R"AS(
+uint nextControlState(uint value)
+{
+    return value * 1664525 + 1013904223;
+}
+
+bool recordBranch(int&out trace, int marker)
+{
+    trace = (trace * 33) ^ marker;
+    return (trace & marker) != 0;
+}
+
+int classifySparse(int key)
+{
+    int score = 0;
+    switch (key)
+    {
+    case -7: score += 2; break;
+    case -1: score += 3;
+    case 0: score += 5; break;
+    case 3:
+    case 11: score += 7; break;
+    default: score -= key;
+    }
+    return score;
+}
+
+int main(uint seed)
+{
+    uint state = seed;
+    int checksum = int(seed ^ (seed >>> 16));
+    int trace = 17;
+    for (int i = 0; i < 160000; i++)
+    {
+        state = nextControlState(state + uint(i));
+        int key = int(state & 31) - 12;
+        checksum += classifySparse(key);
+
+        bool left = ((state & 1) != 0) && recordBranch(trace, 1);
+        bool right = ((state & 2) != 0) || recordBranch(trace, 2);
+        if (left ^^ right) checksum += 13;
+        else checksum -= 9;
+
+        int limit = int((state >>> 3) & 7);
+        int local = 0;
+        for (int j = 0; j < limit; j++)
+        {
+            if (j == 2 && (state & 0x40) != 0) continue;
+            local += j + key;
+            if (j >= 4 && (state & 0x80) != 0) break;
+        }
+
+        int spins = int((state >>> 8) & 3);
+        while (spins > 0)
+        {
+            local ^= spins;
+            spins--;
+        }
+        checksum += local + (trace & 0xFF);
+    }
+    return checksum;
+}
+)AS";
+
+const char* kReferenceAliasing = R"AS(
+class Pair
+{
+    int first;
+    int second;
+}
+
+void exchange(int&out left, int&out right)
+{
+    int temporary = left;
+    left = right;
+    right = temporary;
+}
+
+void splitValue(int input, int&out low, int&out high)
+{
+    low = input & 0xFF;
+    high = (input >>> 8) & 0xFF;
+}
+
+int& selectSlot(Pair&inout pair, bool first)
+{
+    if (first) return pair.first;
+    return pair.second;
+}
+
+int main(uint seed)
+{
+    array<int> values = {int(seed), 3, 5, 7};
+    Pair pair;
+    pair.first = int(seed & 0xFF);
+    pair.second = int((seed >>> 8) & 0xFF);
+    uint state = seed ^ 0x6D2B79F5;
+    int checksum = 0;
+    for (int i = 0; i < 120000; i++)
+    {
+        state = state * 1103515245 + 12345;
+        uint first = state & 3;
+        uint second = (state >>> 2) & 3;
+
+        exchange(values[first], values[second]);
+        if ((state & 0x10) != 0)
+            splitValue(int(state), values[first], values[second]);
+        else
+            splitValue(int(state), pair.first, pair.second);
+
+        selectSlot(pair, (state & 0x20) != 0) = int(state & 0x3FF);
+        if ((state & 0x40) != 0)
+            exchange(pair.first, pair.second);
+
+        checksum += values[first] + values[second];
+        checksum ^= pair.first + pair.second + (first == second ? 1 : 0);
+    }
+    return checksum;
+}
+)AS";
+
+const char* kContainerMutation = R"AS(
+int main(uint seed)
+{
+    array<int> values = {int(seed & 7), 3, 5};
+    dictionary cache;
+    uint state = seed ^ 0xC001D00D;
+    int checksum = 0;
+    for (int i = 0; i < 12000; i++)
+    {
+        state = state * 22695477 + 1;
+        uint operation = state & 3;
+        if (operation == 0)
+        {
+            values.insertLast(int(state & 0xFF));
+        }
+        else if (operation == 1 && values.length() > 2)
+        {
+            values.removeAt((state >>> 8) % values.length());
+        }
+        else if (operation == 2)
+        {
+            uint position = (state >>> 10) % (values.length() + 1);
+            values.insertAt(position, int((state >>> 16) & 0xFF));
+        }
+        else if (values.length() > 3)
+        {
+            values.removeLast();
+        }
+
+        uint index = (state >>> 4) % values.length();
+        values[index] ^= int(state & 31);
+        string key = "key-" + itos(int((state >>> 12) & 15));
+        cache.set(key, int64(int(state)));
+        int64 cached = 0;
+        if (cache.get(key, cached)) checksum ^= int(cached);
+        if ((state & 0x100) != 0 && cache.exists(key)) checksum++;
+        if ((state & 0x200) != 0) cache.delete(key);
+        checksum += values[index] + int(values.length());
+    }
+
+    array<string>@ keys = cache.getKeys();
+    for (uint i = 0; i < values.length(); i++) checksum += values[i];
+    return checksum + int(keys.length()) + int(cache.getSize());
+}
+)AS";
+
 const char* kSysCalls = R"AS(
 int main()
 {
@@ -944,6 +1161,10 @@ const CaseDef kCases[] = {
     {"dictionary-ops", kDictionaryOps, nullptr, nullptr, false},
     {"globals-ns", kGlobalsNs, nullptr, nullptr, false},
     {"types-mixed", kTypesMixed, nullptr, nullptr, false},
+    {"data-numeric", kDataNumeric, nullptr, nullptr, false},
+    {"data-control-flow", kDataControlFlow, nullptr, nullptr, false},
+    {"reference-aliasing", kReferenceAliasing, nullptr, nullptr, false},
+    {"container-mutation", kContainerMutation, nullptr, nullptr, false},
     {"sys-calls", kSysCalls, nullptr, nullptr, false},
     {"exceptions", kExceptions, nullptr, nullptr, false},
     {"imports", kImportsConsumer, "showcase_imports_provider", kImportsProvider, true},
@@ -1023,24 +1244,65 @@ asIScriptFunction* BuildCase(asIScriptEngine* engine, const CaseDef& def) {
     return module->GetFunctionByName("main");
 }
 
-double Run(asIScriptEngine* engine, asIScriptFunction* function, asDWORD* result) {
-    double best = std::numeric_limits<double>::max();
+// Reproducible boundary values and unrelated bit patterns drive the parameterized cases.
+const asDWORD kScenarioInputs[] = {
+    0u,
+    1u,
+    2u,
+    0x7FFFFFFFu,
+    0x80000000u,
+    0xFFFFFFFFu,
+    0x9E3779B9u,
+    0xC001D00Du,
+};
+
+struct RunResult {
+    double best = -1.0;
+    std::vector<asDWORD> outputs;
+};
+
+RunResult Run(asIScriptEngine* engine, asIScriptFunction* function) {
+    RunResult result;
+    const asUINT parameterCount = function->GetParamCount();
+    const int returnType = function->GetReturnTypeId();
+    if (parameterCount > 1 || (returnType != asTYPEID_INT32 && returnType != asTYPEID_UINT32))
+        return result;
+    if (parameterCount == 1) {
+        int parameterType = 0;
+        if (function->GetParam(0, &parameterType) < 0 ||
+            (parameterType != asTYPEID_INT32 && parameterType != asTYPEID_UINT32)) {
+            return result;
+        }
+    }
+
+    result.best = std::numeric_limits<double>::max();
+    const size_t inputCount = parameterCount == 0
+        ? 1
+        : sizeof(kScenarioInputs) / sizeof(kScenarioInputs[0]);
     for (int round = 0; round < 3; round++) {
         asIScriptContext* context = engine->CreateContext();
-        if (!context || context->Prepare(function) < 0) return -1.0;
-        auto begin = std::chrono::steady_clock::now();
-        int state = context->Execute();
-        auto end = std::chrono::steady_clock::now();
-        if (state != asEXECUTION_FINISHED) {
-            context->Release();
-            return -1.0;
+        if (!context) return RunResult{};
+        double elapsed = 0.0;
+        for (size_t input = 0; input < inputCount; input++) {
+            if (context->Prepare(function) < 0 ||
+                (parameterCount == 1 && context->SetArgDWord(0, kScenarioInputs[input]) < 0)) {
+                context->Release();
+                return RunResult{};
+            }
+            auto begin = std::chrono::steady_clock::now();
+            int state = context->Execute();
+            auto end = std::chrono::steady_clock::now();
+            if (state != asEXECUTION_FINISHED) {
+                context->Release();
+                return RunResult{};
+            }
+            result.outputs.push_back(context->GetReturnDWord());
+            elapsed += std::chrono::duration<double, std::milli>(end - begin).count();
         }
-        *result = context->GetReturnDWord();
         context->Release();
-        double elapsed = std::chrono::duration<double, std::milli>(end - begin).count();
-        best = std::min(best, elapsed);
+        result.best = std::min(result.best, elapsed);
     }
-    return best;
+    return result;
 }
 
 bool ModuleHasJitFunctions(asIScriptModule* mod) {
@@ -1109,15 +1371,27 @@ int main() {
             failures++;
             continue;
         }
-        asDWORD interpResult = 0;
-        asDWORD jitResult = 0;
-        double interpMs = Run(interpreter, interpFunc, &interpResult);
-        double jitMs = Run(jitEngine, jitFunc, &jitResult);
-        bool match = interpMs > 0.0 && jitMs > 0.0 && interpResult == jitResult;
+        RunResult interpRun = Run(interpreter, interpFunc);
+        RunResult jitRun = Run(jitEngine, jitFunc);
+        double interpMs = interpRun.best;
+        double jitMs = jitRun.best;
+        bool match = interpMs > 0.0 && jitMs > 0.0 && interpRun.outputs == jitRun.outputs;
         double speedup = match ? interpMs / jitMs : 0.0;
         std::printf("%-18s %12.3f %12.3f %8.2fx %s\n", def.name, interpMs, jitMs, speedup,
                     match ? "ok" : "MISMATCH");
         if (!match) {
+            size_t mismatch = 0;
+            while (mismatch < interpRun.outputs.size() && mismatch < jitRun.outputs.size() &&
+                   interpRun.outputs[mismatch] == jitRun.outputs[mismatch]) {
+                mismatch++;
+            }
+            if (mismatch < interpRun.outputs.size() && mismatch < jitRun.outputs.size()) {
+                std::printf("  result[%zu]: interpreter=%u jit=%u\n", mismatch,
+                            interpRun.outputs[mismatch], jitRun.outputs[mismatch]);
+            } else {
+                std::printf("  result count: interpreter=%zu jit=%zu\n",
+                            interpRun.outputs.size(), jitRun.outputs.size());
+            }
             failures++;
             continue;
         }
