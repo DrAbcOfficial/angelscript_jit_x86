@@ -271,7 +271,7 @@ int main(int argc, char** argv) {
         "arith.as", "branch.as", "funcs.as", "class.as", "sys.as", "except.as", "string.as",
         "globals.as", "statements_extra.as", "types.as", "functions_advanced.as",
         "classes_advanced.as", "operators.as", "handles.as", "lifetime_refs.as",
-        "shared_mixin.as",
+        "shared_mixin.as", "funcptr_fallback.as",
     };
 
     bool jitActive = false;

@@ -1045,7 +1045,8 @@ EmitResult FunctionEmitter::EmitCalls(size_t index,
     auto emitInlineCall = [&](asCScriptFunction* target,
                               const InlineScriptBody& body,
                               bool virtualCall,
-                              int virtualSlot) -> EmitResult {
+                              int virtualSlot,
+                              bool indirectCall) -> EmitResult {
         Label slow = cc.new_label();
         Label fastDone = cc.new_label();
         Label done = cc.new_label();
@@ -1075,6 +1076,13 @@ EmitResult FunctionEmitter::EmitCalls(size_t index,
             cc.test(matched.r8(), matched.r8());
             cc.jz(slow);
         }
+        if (indirectCall) {
+            x86::Gp actualTarget = cc.new_gp32("inlineIndirectTarget");
+            LoadVar(asBC_SWORDARG0(ip), actualTarget);
+            cc.cmp(actualTarget,
+                   Imm(int64_t((intptr_t)target)));
+            cc.jne(slow);
+        }
         if (!emitInlineBody(target, body, slow, fastDone))
             return EmitResult::Error;
         cc.bind(fastDone);
@@ -1089,7 +1097,7 @@ EmitResult FunctionEmitter::EmitCalls(size_t index,
         cc.jmp(done);
 
         cc.bind(slow);
-        if (virtualCall) {
+        if (virtualCall || indirectCall) {
             if (!EmitHelperCall(instruction, ip)) return EmitResult::Error;
         } else {
             InvokeNode* invocation = nullptr;
@@ -1205,7 +1213,7 @@ EmitResult FunctionEmitter::EmitCalls(size_t index,
 
         InlineScriptBody inlineBody;
         if (DecodeInlineScriptBody(target, inlineBody))
-            return emitInlineCall(target, inlineBody, false, -1);
+            return emitInlineCall(target, inlineBody, false, -1, false);
 
         InvokeNode* invocation = nullptr;
         Error err = cc.invoke(
@@ -1224,6 +1232,28 @@ EmitResult FunctionEmitter::EmitCalls(size_t index,
         cc.jnz(exitLabel_);
         return EmitResult::Success;
     }
+    case asBC_CallPtr: {
+        asCScriptFunction* target = nullptr;
+        bool ambiguous = false;
+        for (const Instruction& candidateInstruction : instructions_) {
+            if (candidateInstruction.op != asBC_FuncPtr) continue;
+            auto* candidate = reinterpret_cast<asCScriptFunction*>(
+                asBC_PTRARG(bytecode_ + candidateInstruction.off));
+            if (!candidate || candidate->funcType != asFUNC_SCRIPT)
+                continue;
+            if (!target) {
+                target = candidate;
+            } else if (target != candidate) {
+                ambiguous = true;
+                break;
+            }
+        }
+        InlineScriptBody inlineBody;
+        if (!target || ambiguous ||
+            !DecodeInlineScriptBody(target, inlineBody))
+            return EmitResult::Unhandled;
+        return emitInlineCall(target, inlineBody, false, -1, true);
+    }
     case asBC_CALLINTF: {
         auto* declaration =
             engine_->GetScriptFunction(asBC_INTARG(ip));
@@ -1238,7 +1268,7 @@ EmitResult FunctionEmitter::EmitCalls(size_t index,
         if (!DecodeInlineScriptBody(target, inlineBody))
             return EmitResult::Unhandled;
         return emitInlineCall(target, inlineBody, true,
-                              declaration->vfTableIdx);
+                              declaration->vfTableIdx, false);
     }
     case asBC_CALLSYS: {
         auto* target = engine_->scriptFunctions[asBC_INTARG(ip)];
