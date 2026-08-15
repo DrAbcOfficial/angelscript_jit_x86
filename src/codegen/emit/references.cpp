@@ -168,6 +168,8 @@ EmitResult FunctionEmitter::EmitReferences(
             (objectType->flags & asOBJ_SCRIPT_OBJECT) != 0;
         const bool functionObject =
             (objectType->flags & asOBJ_FUNCDEF) != 0;
+        const bool scalarOnlyObject =
+            scriptObject && detail::IsScalarOnlyScriptObject(objectType);
         if (!scriptObject && !functionObject) {
             if (!EmitHelperCall(instruction, ip)) return EmitResult::Error;
             return EmitResult::Success;
@@ -183,12 +185,25 @@ EmitResult FunctionEmitter::EmitReferences(
         InvokeNode* invocation = nullptr;
         cc.mov(x86::dword_ptr(regs_, ppOff),
                Imm(int64_t((intptr_t)ip)));
-        Error err = cc.invoke(
-            Out<InvokeNode*>(invocation),
-            Imm(int64_t((intptr_t)(
-                functionObject ? &FastReleaseScriptFunction
-                               : &FastReleaseScriptObject))),
-            FuncSignature::build<void, void*>());
+        Error err;
+        if (scalarOnlyObject) {
+            auto* bucket = objectPool_.GetBucket(objectType);
+            err = cc.invoke(
+                Out<InvokeNode*>(invocation),
+                Imm(int64_t((intptr_t)&detail::ReleasePooledScriptObject)),
+                FuncSignature::build<void, void*,
+                                     detail::ScalarObjectPoolBucket*>());
+            if (err == kErrorOk)
+                invocation->set_arg(
+                    1, Imm(int64_t((intptr_t)bucket)));
+        } else {
+            err = cc.invoke(
+                Out<InvokeNode*>(invocation),
+                Imm(int64_t((intptr_t)(
+                    functionObject ? &FastReleaseScriptFunction
+                                   : &FastReleaseScriptObject))),
+                FuncSignature::build<void, void*>());
+        }
         if (err != kErrorOk) return EmitResult::Error;
         invocation->set_arg(0, object);
         cc.mov(x86::dword_ptr(fp_, -offset * 4), 0);

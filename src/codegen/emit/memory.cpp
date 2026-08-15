@@ -20,8 +20,9 @@ EmitResult FunctionEmitter::EmitMemory(size_t index,
     case asBC_SetV4: {
         if (kInlineLocalV4) {
             const int offset = asBC_SWORDARG0(ip);
-            cc.mov(x86::dword_ptr(fp_, -offset * 4),
-                   Imm(int64_t((int32_t)asBC_DWORDARG(ip))));
+            x86::Gp value = cc.new_gp32("value");
+            cc.mov(value, Imm(int64_t((int32_t)asBC_DWORDARG(ip))));
+            StoreVar(offset, value);
         } else if (!EmitHelperCall(instruction, ip)) {
             return EmitResult::Error;
         }
@@ -55,16 +56,24 @@ EmitResult FunctionEmitter::EmitMemory(size_t index,
     case asBC_CpyVtoR8: {
         if (kInlineCallV8) {
             const int source = asBC_SWORDARG0(ip);
-            x86::Gp low = cc.new_gp32("low");
-            x86::Gp high = cc.new_gp32("high");
-            cc.mov(low, x86::dword_ptr(fp_, -source * 4));
-            cc.mov(high, x86::dword_ptr(fp_, -source * 4 + 4));
-            cc.mov(x86::dword_ptr(
-                       regs_, offsetof(asSVMRegisters, valueRegister)),
-                   low);
-            cc.mov(x86::dword_ptr(
-                       regs_, offsetof(asSVMRegisters, valueRegister) + 4),
-                   high);
+            if (cacheLocals_) {
+                x86::Vec value = cc.new_xmm("value");
+                LoadVar64(source, value);
+                cc.movq(x86::qword_ptr(
+                            regs_, offsetof(asSVMRegisters, valueRegister)),
+                        value);
+            } else {
+                x86::Gp low = cc.new_gp32("low");
+                x86::Gp high = cc.new_gp32("high");
+                cc.mov(low, x86::dword_ptr(fp_, -source * 4));
+                cc.mov(high, x86::dword_ptr(fp_, -source * 4 + 4));
+                cc.mov(x86::dword_ptr(
+                           regs_, offsetof(asSVMRegisters, valueRegister)),
+                       low);
+                cc.mov(x86::dword_ptr(
+                           regs_, offsetof(asSVMRegisters, valueRegister) + 4),
+                       high);
+            }
         } else if (!EmitHelperCall(instruction, ip)) {
             return EmitResult::Error;
         }
@@ -86,16 +95,24 @@ EmitResult FunctionEmitter::EmitMemory(size_t index,
     case asBC_CpyRtoV8: {
         if (kInlineCallV8) {
             const int destination = asBC_SWORDARG0(ip);
-            x86::Gp low = cc.new_gp32("low");
-            x86::Gp high = cc.new_gp32("high");
-            cc.mov(low,
-                   x86::dword_ptr(
-                       regs_, offsetof(asSVMRegisters, valueRegister)));
-            cc.mov(high,
-                   x86::dword_ptr(
-                       regs_, offsetof(asSVMRegisters, valueRegister) + 4));
-            cc.mov(x86::dword_ptr(fp_, -destination * 4), low);
-            cc.mov(x86::dword_ptr(fp_, -destination * 4 + 4), high);
+            if (cacheLocals_) {
+                x86::Vec value = cc.new_xmm("value");
+                cc.movq(value,
+                        x86::qword_ptr(
+                            regs_, offsetof(asSVMRegisters, valueRegister)));
+                StoreVar64(destination, value);
+            } else {
+                x86::Gp low = cc.new_gp32("low");
+                x86::Gp high = cc.new_gp32("high");
+                cc.mov(low,
+                       x86::dword_ptr(
+                           regs_, offsetof(asSVMRegisters, valueRegister)));
+                cc.mov(high,
+                       x86::dword_ptr(
+                           regs_, offsetof(asSVMRegisters, valueRegister) + 4));
+                cc.mov(x86::dword_ptr(fp_, -destination * 4), low);
+                cc.mov(x86::dword_ptr(fp_, -destination * 4 + 4), high);
+            }
         } else if (!EmitHelperCall(instruction, ip)) {
             return EmitResult::Error;
         }
@@ -105,10 +122,20 @@ EmitResult FunctionEmitter::EmitMemory(size_t index,
         if (kInlineLocalV8) {
             const int offset = asBC_SWORDARG0(ip);
             const asQWORD value = asBC_QWORDARG(ip);
-            cc.mov(x86::dword_ptr(fp_, -offset * 4),
-                   Imm(int64_t((int32_t)asDWORD(value))));
-            cc.mov(x86::dword_ptr(fp_, -offset * 4 + 4),
-                   Imm(int64_t((int32_t)asDWORD(value >> 32))));
+            if (cacheLocals_) {
+                x86::Gp low = cc.new_gp32("low");
+                x86::Gp high = cc.new_gp32("high");
+                cc.mov(low, Imm(int64_t((int32_t)asDWORD(value))));
+                cc.mov(high,
+                       Imm(int64_t((int32_t)asDWORD(value >> 32))));
+                StoreVar(offset, low);
+                StoreVar(offset - 1, high);
+            } else {
+                cc.mov(x86::dword_ptr(fp_, -offset * 4),
+                       Imm(int64_t((int32_t)asDWORD(value))));
+                cc.mov(x86::dword_ptr(fp_, -offset * 4 + 4),
+                       Imm(int64_t((int32_t)asDWORD(value >> 32))));
+            }
         } else if (!EmitHelperCall(instruction, ip)) {
             return EmitResult::Error;
         }
@@ -118,12 +145,18 @@ EmitResult FunctionEmitter::EmitMemory(size_t index,
         if (kInlineLocalV8) {
             const int destination = asBC_SWORDARG0(ip);
             const int source = asBC_SWORDARG1(ip);
-            x86::Gp low = cc.new_gp32("low");
-            x86::Gp high = cc.new_gp32("high");
-            cc.mov(low, x86::dword_ptr(fp_, -source * 4));
-            cc.mov(high, x86::dword_ptr(fp_, -source * 4 + 4));
-            cc.mov(x86::dword_ptr(fp_, -destination * 4), low);
-            cc.mov(x86::dword_ptr(fp_, -destination * 4 + 4), high);
+            if (cacheLocals_) {
+                x86::Vec value = cc.new_xmm("value");
+                LoadVar64(source, value);
+                StoreVar64(destination, value);
+            } else {
+                x86::Gp low = cc.new_gp32("low");
+                x86::Gp high = cc.new_gp32("high");
+                cc.mov(low, x86::dword_ptr(fp_, -source * 4));
+                cc.mov(high, x86::dword_ptr(fp_, -source * 4 + 4));
+                cc.mov(x86::dword_ptr(fp_, -destination * 4), low);
+                cc.mov(x86::dword_ptr(fp_, -destination * 4 + 4), high);
+            }
         } else if (!EmitHelperCall(instruction, ip)) {
             return EmitResult::Error;
         }

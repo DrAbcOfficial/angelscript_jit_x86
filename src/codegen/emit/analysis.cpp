@@ -26,6 +26,89 @@ bool IsConditionalBranch(asEBCInstr op) {
     }
 }
 
+bool IsCacheableLocalOp(asEBCInstr op) {
+    switch (op) {
+    case asBC_JitEntry:
+    case asBC_SUSPEND:
+    case asBC_JMP:
+    case asBC_JZ:
+    case asBC_JNZ:
+    case asBC_JS:
+    case asBC_JNS:
+    case asBC_JP:
+    case asBC_JNP:
+    case asBC_JLowZ:
+    case asBC_JLowNZ:
+    case asBC_RET:
+    case asBC_SetV1:
+    case asBC_SetV2:
+    case asBC_SetV4:
+    case asBC_SetV8:
+    case asBC_CpyVtoV4:
+    case asBC_CpyVtoV8:
+    case asBC_CpyVtoR4:
+    case asBC_CpyVtoR8:
+    case asBC_CpyRtoV4:
+    case asBC_CpyRtoV8:
+    case asBC_iTOf:
+    case asBC_fTOi:
+    case asBC_uTOf:
+    case asBC_fTOu:
+    case asBC_dTOi:
+    case asBC_dTOu:
+    case asBC_dTOf:
+    case asBC_iTOd:
+    case asBC_uTOd:
+    case asBC_fTOd:
+    case asBC_ADDi:
+    case asBC_SUBi:
+    case asBC_MULi:
+    case asBC_DIVi:
+    case asBC_MODi:
+    case asBC_ADDf:
+    case asBC_SUBf:
+    case asBC_MULf:
+    case asBC_DIVf:
+    case asBC_ADDd:
+    case asBC_SUBd:
+    case asBC_MULd:
+    case asBC_DIVd:
+    case asBC_ADDIi:
+    case asBC_SUBIi:
+    case asBC_MULIi:
+    case asBC_ADDIf:
+    case asBC_SUBIf:
+    case asBC_MULIf:
+    case asBC_NEGi:
+    case asBC_NEGf:
+    case asBC_NEGd:
+    case asBC_NOT:
+    case asBC_BNOT:
+    case asBC_BAND:
+    case asBC_BOR:
+    case asBC_BXOR:
+    case asBC_BSLL:
+    case asBC_BSRL:
+    case asBC_BSRA:
+    case asBC_IncVi:
+    case asBC_DecVi:
+    case asBC_CMPi:
+    case asBC_CMPIi:
+    case asBC_CMPf:
+    case asBC_CMPd:
+    case asBC_CMPIf:
+    case asBC_TZ:
+    case asBC_TNZ:
+    case asBC_TS:
+    case asBC_TNS:
+    case asBC_TP:
+    case asBC_TNP:
+        return true;
+    default:
+        return false;
+    }
+}
+
 bool WritesValueRegister(asEBCInstr op) {
     switch (op) {
     case asBC_LdGRdR4:
@@ -183,6 +266,16 @@ bool FunctionEmitter::DecodeInstructions() {
     }
     if (offset != bytecodeLength_) return false;
     inlineFieldMemory_ = instructions_.size() <= 256;
+    bool hasDoubleArithmetic = false;
+    cacheLocals_ = scriptFunction_->scriptData &&
+                   scriptFunction_->scriptData->variableSpace <= 64;
+    for (const Instruction& instruction : instructions_) {
+        cacheLocals_ = cacheLocals_ && IsCacheableLocalOp(instruction.op);
+        hasDoubleArithmetic = hasDoubleArithmetic ||
+            instruction.op == asBC_ADDd || instruction.op == asBC_SUBd ||
+            instruction.op == asBC_MULd || instruction.op == asBC_DIVd;
+    }
+    cacheLocals_ = cacheLocals_ && hasDoubleArithmetic;
     return true;
 }
 

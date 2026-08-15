@@ -4,13 +4,136 @@
 
 #include "as_scriptengine.h"
 #include "as_scriptobject.h"
+#include "as_property.h"
 #include "as_texts.h"
 
+#include <atomic>
 #include <cassert>
 #include <cmath>
 #include <cstring>
+#include <mutex>
+#include <vector>
 
 namespace asjitx86::detail {
+
+struct ScalarObjectPoolBucket {
+    asCScriptEngine* engine = nullptr;
+    asCObjectType* objectType = nullptr;
+    std::atomic<asPWORD> owner{0};
+    void* head = nullptr;
+    unsigned count = 0;
+};
+
+struct ScalarObjectPool::Impl {
+    explicit Impl(asCScriptEngine* value) : engine(value) {}
+
+    asCScriptEngine* engine;
+    std::mutex mutex;
+    std::vector<std::unique_ptr<ScalarObjectPoolBucket>> buckets;
+};
+
+namespace {
+
+bool IsPoolOwner(ScalarObjectPoolBucket* bucket) {
+    static thread_local const char threadToken = 0;
+    const asPWORD token = reinterpret_cast<asPWORD>(&threadToken);
+    asPWORD owner = bucket->owner.load(std::memory_order_acquire);
+    if (owner == token) return true;
+    if (owner != 0) return false;
+    return bucket->owner.compare_exchange_strong(
+        owner, token, std::memory_order_acq_rel,
+        std::memory_order_acquire);
+}
+
+}
+
+ScalarObjectPool::ScalarObjectPool(asIScriptEngine* engine)
+    : impl_(std::make_unique<Impl>(static_cast<asCScriptEngine*>(engine))) {}
+
+ScalarObjectPool::~ScalarObjectPool() {
+    Clear();
+}
+
+ScalarObjectPoolBucket* ScalarObjectPool::GetBucket(
+    asCObjectType* objectType) {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    for (const auto& bucket : impl_->buckets) {
+        if (bucket->objectType == objectType) return bucket.get();
+    }
+    auto bucket = std::make_unique<ScalarObjectPoolBucket>();
+    bucket->engine = impl_->engine;
+    bucket->objectType = objectType;
+    objectType->AddRef();
+    ScalarObjectPoolBucket* result = bucket.get();
+    impl_->buckets.push_back(std::move(bucket));
+    return result;
+}
+
+void ScalarObjectPool::Clear() {
+    std::lock_guard<std::mutex> poolLock(impl_->mutex);
+    for (const auto& bucket : impl_->buckets) {
+        void* object = bucket->head;
+        bucket->head = nullptr;
+        bucket->count = 0;
+        while (object) {
+            void* next = *static_cast<void**>(object);
+            impl_->engine->CallFree(object);
+            object = next;
+        }
+        if (bucket->objectType) {
+            bucket->objectType->Release();
+            bucket->objectType = nullptr;
+        }
+    }
+}
+
+bool IsScalarOnlyScriptObject(asCObjectType* objectType) {
+    if (!objectType || (objectType->flags & asOBJ_GC)) return false;
+    for (asCObjectType* type = objectType; type; type = type->derivedFrom) {
+        if (type->beh.destruct) return false;
+    }
+    for (asUINT index = 0; index < objectType->properties.GetLength();
+         index++) {
+        const asCDataType& type = objectType->properties[index]->type;
+        if (type.IsObject() || type.IsFuncdef()) return false;
+    }
+    return true;
+}
+
+void* CreatePooledScriptObject(ScalarObjectPoolBucket* bucket) {
+    void* memory = nullptr;
+    if (IsPoolOwner(bucket)) {
+        memory = bucket->head;
+        if (memory) {
+            bucket->head = *static_cast<void**>(memory);
+            bucket->count--;
+        }
+    }
+    if (!memory) memory = bucket->engine->CallAlloc(bucket->objectType);
+    ScriptObject_Construct(bucket->objectType,
+                           static_cast<asCScriptObject*>(memory));
+    return memory;
+}
+
+void ReleasePooledScriptObject(void* object,
+                               ScalarObjectPoolBucket* bucket) {
+    auto* scriptObject = static_cast<asCScriptObject*>(object);
+    if (scriptObject->asCScriptObject::GetObjectType() !=
+            bucket->objectType) {
+        scriptObject->asCScriptObject::Release();
+        return;
+    }
+    if (!scriptObject->asCScriptObject::ReleaseScalarOnlyWithoutFree())
+        return;
+
+    const bool pooled = IsPoolOwner(bucket) && bucket->count < 64;
+    if (pooled) {
+        *static_cast<void**>(object) = bucket->head;
+        bucket->head = object;
+        bucket->count++;
+    }
+    if (!pooled) bucket->engine->CallFree(object);
+}
 
 int AllocScriptObject(asSVMRegisters* regs, asCObjectType* objectType,
                       asCScriptFunction* constructor, const asDWORD* nextBc) {

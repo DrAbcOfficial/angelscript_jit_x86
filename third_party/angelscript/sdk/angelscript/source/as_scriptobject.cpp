@@ -653,6 +653,29 @@ int asCScriptObject::Release() const
 	return r;
 }
 
+bool asCScriptObject::ReleaseScalarOnlyWithoutFree() const
+{
+	// The JIT only uses this entry point for non-GC script types without
+	// destructors or non-scalar properties. Fall back whenever state that
+	// needs the full destructor path has been attached to the instance.
+	if( refCount.get() != 1 || extra || isDestructCalled ||
+		hasRefCountReachedZero )
+	{
+		Release();
+		return false;
+	}
+
+	gcFlag = false;
+	int r = refCount.atomicDec();
+	if( r != 0 )
+		return false;
+
+	hasRefCountReachedZero = true;
+	asCObjectType *type = objType;
+	type->Release();
+	return true;
+}
+
 void asCScriptObject::CallDestructor()
 {
 	// Only allow the destructor to be called once

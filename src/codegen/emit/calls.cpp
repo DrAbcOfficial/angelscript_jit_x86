@@ -36,9 +36,13 @@ bool IsInlineScriptOp(asEBCInstr op) {
     switch (op) {
     case asBC_JitEntry:
     case asBC_SetV4:
+    case asBC_SetV8:
     case asBC_CpyVtoV4:
     case asBC_CpyVtoR4:
+    case asBC_CpyVtoR8:
     case asBC_CpyRtoV4:
+    case asBC_CpyVtoG4:
+    case asBC_CpyGtoV4:
     case asBC_PshV4:
     case asBC_PshVPtr:
     case asBC_PopPtr:
@@ -52,8 +56,18 @@ bool IsInlineScriptOp(asEBCInstr op) {
     case asBC_ADDi:
     case asBC_SUBi:
     case asBC_MULi:
+    case asBC_ADDf:
+    case asBC_SUBf:
+    case asBC_MULf:
+    case asBC_ADDd:
+    case asBC_SUBd:
+    case asBC_MULd:
     case asBC_ADDIi:
     case asBC_SUBIi:
+    case asBC_MULIi:
+    case asBC_ADDIf:
+    case asBC_SUBIf:
+    case asBC_MULIf:
     case asBC_NEGi:
     case asBC_BNOT:
     case asBC_CMPi:
@@ -446,6 +460,37 @@ EmitResult FunctionEmitter::EmitCalls(size_t index,
     constexpr uint32_t ppOff = offsetof(asSVMRegisters, programPointer);
     auto& cc = Compiler();
 
+    auto emitCreateScriptObject = [&](asCObjectType* objectType,
+                                      const x86::Gp& object) -> bool {
+        InvokeNode* invocation = nullptr;
+        Error err;
+        if (detail::IsScalarOnlyScriptObject(objectType)) {
+            auto* bucket = objectPool_.GetBucket(objectType);
+            err = cc.invoke(
+                Out<InvokeNode*>(invocation),
+                Imm(int64_t((intptr_t)&detail::CreatePooledScriptObject)),
+                FuncSignature::build<void*,
+                                     detail::ScalarObjectPoolBucket*>());
+            if (err == kErrorOk)
+                invocation->set_arg(
+                    0, Imm(int64_t((intptr_t)bucket)));
+        } else {
+            err = cc.invoke(
+                Out<InvokeNode*>(invocation),
+                Imm(int64_t((intptr_t)&detail::CreateScriptObject)),
+                FuncSignature::build<void*, asSVMRegisters*,
+                                     asCObjectType*>());
+            if (err == kErrorOk) {
+                invocation->set_arg(0, regs_);
+                invocation->set_arg(
+                    1, Imm(int64_t((intptr_t)objectType)));
+            }
+        }
+        if (err != kErrorOk) return false;
+        invocation->set_ret(0, object);
+        return true;
+    };
+
     auto emitSimpleFactory = [&](asCScriptFunction* factory,
                                  const SimpleFactoryTarget& factoryTarget)
         -> bool {
@@ -456,16 +501,8 @@ EmitResult FunctionEmitter::EmitCalls(size_t index,
         cc.mov(x86::dword_ptr(regs_, ppOff),
                Imm(int64_t((intptr_t)ip)));
 
-        InvokeNode* invocation = nullptr;
-        Error err = cc.invoke(
-            Out<InvokeNode*>(invocation),
-            Imm(int64_t((intptr_t)&detail::CreateScriptObject)),
-            FuncSignature::build<void*, asSVMRegisters*, asCObjectType*>());
-        if (err != kErrorOk) return false;
-        invocation->set_arg(0, regs_);
-        invocation->set_arg(
-            1, Imm(int64_t((intptr_t)factoryTarget.objectType)));
-        invocation->set_ret(0, object);
+        if (!emitCreateScriptObject(factoryTarget.objectType, object))
+            return false;
 
         cc.mov(constructorFrame, factorySp);
         cc.sub(constructorFrame, AS_PTR_SIZE * 4);
@@ -514,6 +551,29 @@ EmitResult FunctionEmitter::EmitCalls(size_t index,
             else
                 cc.mov(x86::dword_ptr(callFrame, -offset * 4), source);
         };
+        auto loadValue64 = [&](int offset, const x86::Vec& destination) {
+            if (offset > 1 && size_t(offset) < locals.size()) {
+                x86::Vec high = cc.new_xmm("inlineHigh64");
+                cc.movd(destination, locals[static_cast<size_t>(offset)]);
+                cc.movd(high, locals[static_cast<size_t>(offset - 1)]);
+                cc.psllq(high, 32);
+                cc.por(destination, high);
+            } else {
+                cc.movq(destination,
+                        x86::qword_ptr(callFrame, -offset * 4));
+            }
+        };
+        auto storeValue64 = [&](int offset, const x86::Vec& source) {
+            if (offset > 1 && size_t(offset) < locals.size()) {
+                x86::Vec high = cc.new_xmm("inlineHigh64");
+                cc.movd(locals[static_cast<size_t>(offset)], source);
+                cc.movq(high, source);
+                cc.psrlq(high, 32);
+                cc.movd(locals[static_cast<size_t>(offset - 1)], high);
+            } else {
+                cc.movq(x86::qword_ptr(callFrame, -offset * 4), source);
+            }
+        };
 
         std::vector<Label> labels(body.instructions.size());
         for (Label& label : labels) label = cc.new_label();
@@ -545,6 +605,19 @@ EmitResult FunctionEmitter::EmitCalls(size_t index,
                 storeValue(asBC_SWORDARG0(bodyIp), value);
                 break;
             }
+            case asBC_SetV8: {
+                const int destination = asBC_SWORDARG0(bodyIp);
+                const asQWORD immediate = asBC_QWORDARG(bodyIp);
+                x86::Gp low = cc.new_gp32("inlineLow64");
+                x86::Gp high = cc.new_gp32("inlineHigh64");
+                cc.mov(low, Imm(int64_t(static_cast<int32_t>(
+                                static_cast<asDWORD>(immediate)))));
+                cc.mov(high, Imm(int64_t(static_cast<int32_t>(
+                                 static_cast<asDWORD>(immediate >> 32)))));
+                storeValue(destination, low);
+                storeValue(destination - 1, high);
+                break;
+            }
             case asBC_CpyVtoV4: {
                 x86::Gp value = cc.new_gp32("inlineValue");
                 loadValue(asBC_SWORDARG1(bodyIp), value);
@@ -559,11 +632,37 @@ EmitResult FunctionEmitter::EmitCalls(size_t index,
                        value);
                 break;
             }
+            case asBC_CpyVtoR8: {
+                x86::Vec value = cc.new_xmm("inlineValue64");
+                loadValue64(asBC_SWORDARG0(bodyIp), value);
+                cc.movq(x86::qword_ptr(
+                            regs_, offsetof(asSVMRegisters, valueRegister)),
+                        value);
+                break;
+            }
             case asBC_CpyRtoV4: {
                 x86::Gp value = cc.new_gp32("inlineValue");
                 cc.mov(value,
                        x86::dword_ptr(
                            regs_, offsetof(asSVMRegisters, valueRegister)));
+                storeValue(asBC_SWORDARG0(bodyIp), value);
+                break;
+            }
+            case asBC_CpyVtoG4: {
+                x86::Gp value = cc.new_gp32("inlineGlobalValue");
+                x86::Gp address = cc.new_gp32("inlineGlobalAddress");
+                loadValue(asBC_SWORDARG0(bodyIp), value);
+                cc.mov(address,
+                       Imm(int64_t((intptr_t)asBC_PTRARG(bodyIp))));
+                cc.mov(x86::dword_ptr(address), value);
+                break;
+            }
+            case asBC_CpyGtoV4: {
+                x86::Gp value = cc.new_gp32("inlineGlobalValue");
+                x86::Gp address = cc.new_gp32("inlineGlobalAddress");
+                cc.mov(address,
+                       Imm(int64_t((intptr_t)asBC_PTRARG(bodyIp))));
+                cc.mov(value, x86::dword_ptr(address));
                 storeValue(asBC_SWORDARG0(bodyIp), value);
                 break;
             }
@@ -672,8 +771,47 @@ EmitResult FunctionEmitter::EmitCalls(size_t index,
                 storeValue(asBC_SWORDARG0(bodyIp), left);
                 break;
             }
+            case asBC_ADDf:
+            case asBC_SUBf:
+            case asBC_MULf: {
+                x86::Gp leftBits = cc.new_gp32("inlineFloatLeftBits");
+                x86::Gp rightBits = cc.new_gp32("inlineFloatRightBits");
+                x86::Gp resultBits = cc.new_gp32("inlineFloatResultBits");
+                x86::Vec value = cc.new_xmm_ss("inlineFloatValue");
+                x86::Vec operand = cc.new_xmm_ss("inlineFloatOperand");
+                loadValue(asBC_SWORDARG1(bodyIp), leftBits);
+                loadValue(asBC_SWORDARG2(bodyIp), rightBits);
+                cc.movd(value, leftBits);
+                cc.movd(operand, rightBits);
+                if (op == asBC_ADDf)
+                    cc.addss(value, operand);
+                else if (op == asBC_SUBf)
+                    cc.subss(value, operand);
+                else
+                    cc.mulss(value, operand);
+                cc.movd(resultBits, value);
+                storeValue(asBC_SWORDARG0(bodyIp), resultBits);
+                break;
+            }
+            case asBC_ADDd:
+            case asBC_SUBd:
+            case asBC_MULd: {
+                x86::Vec value = cc.new_xmm_sd("inlineDoubleValue");
+                x86::Vec operand = cc.new_xmm_sd("inlineDoubleOperand");
+                loadValue64(asBC_SWORDARG1(bodyIp), value);
+                loadValue64(asBC_SWORDARG2(bodyIp), operand);
+                if (op == asBC_ADDd)
+                    cc.addsd(value, operand);
+                else if (op == asBC_SUBd)
+                    cc.subsd(value, operand);
+                else
+                    cc.mulsd(value, operand);
+                storeValue64(asBC_SWORDARG0(bodyIp), value);
+                break;
+            }
             case asBC_ADDIi:
-            case asBC_SUBIi: {
+            case asBC_SUBIi:
+            case asBC_MULIi: {
                 x86::Gp value = cc.new_gp32("inlineValue");
                 loadValue(asBC_SWORDARG1(bodyIp), value);
                 const int32_t immediate = asBC_INTARG(bodyIp + 1);
@@ -681,7 +819,33 @@ EmitResult FunctionEmitter::EmitCalls(size_t index,
                     cc.add(value, immediate);
                 else if (op == asBC_SUBIi)
                     cc.sub(value, immediate);
+                else
+                    cc.imul(value, value, immediate);
                 storeValue(asBC_SWORDARG0(bodyIp), value);
+                break;
+            }
+            case asBC_ADDIf:
+            case asBC_SUBIf:
+            case asBC_MULIf: {
+                x86::Gp valueBits = cc.new_gp32("inlineFloatValueBits");
+                x86::Gp immediate = cc.new_gp32("inlineFloatImmediate");
+                x86::Gp resultBits = cc.new_gp32("inlineFloatResultBits");
+                x86::Vec value = cc.new_xmm_ss("inlineFloatValue");
+                x86::Vec operand = cc.new_xmm_ss("inlineFloatOperand");
+                loadValue(asBC_SWORDARG1(bodyIp), valueBits);
+                cc.movd(value, valueBits);
+                cc.mov(immediate,
+                       Imm(int64_t(static_cast<int32_t>(
+                           asBC_DWORDARG(bodyIp + 1)))));
+                cc.movd(operand, immediate);
+                if (op == asBC_ADDIf)
+                    cc.addss(value, operand);
+                else if (op == asBC_SUBIf)
+                    cc.subss(value, operand);
+                else
+                    cc.mulss(value, operand);
+                cc.movd(resultBits, value);
+                storeValue(asBC_SWORDARG0(bodyIp), resultBits);
                 break;
             }
             case asBC_NEGi:
@@ -968,15 +1132,8 @@ EmitResult FunctionEmitter::EmitCalls(size_t index,
         cc.mov(x86::dword_ptr(regs_, ppOff),
                Imm(int64_t((intptr_t)ip)));
 
-        InvokeNode* invocation = nullptr;
-        Error err = cc.invoke(
-            Out<InvokeNode*>(invocation),
-            Imm(int64_t((intptr_t)&detail::CreateScriptObject)),
-            FuncSignature::build<void*, asSVMRegisters*, asCObjectType*>());
-        if (err != kErrorOk) return EmitResult::Error;
-        invocation->set_arg(0, regs_);
-        invocation->set_arg(1, Imm(int64_t((intptr_t)objectType)));
-        invocation->set_ret(0, object);
+        if (!emitCreateScriptObject(objectType, object))
+            return EmitResult::Error;
 
         const int argumentDwords =
             constructor->GetSpaceNeededForArguments();

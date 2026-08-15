@@ -54,6 +54,51 @@ Return InvokeCdecl(asFUNCTION_t function, const asDWORD* arguments,
     }
 }
 
+bool PushJitCallState(asCContext* ctx) {
+    const asUINT length = ctx->m_callStack.GetLength();
+    if (length == ctx->m_callStack.GetCapacity())
+        return ctx->PushCallState() >= 0;
+
+    asPWORD saved[5];
+    saved[0] = reinterpret_cast<asPWORD>(ctx->m_regs.stackFramePointer);
+    saved[1] = reinterpret_cast<asPWORD>(ctx->m_currentFunction);
+    saved[2] = reinterpret_cast<asPWORD>(ctx->m_regs.programPointer);
+    saved[3] = reinterpret_cast<asPWORD>(ctx->m_regs.stackPointer);
+    saved[4] = ctx->m_stackIndex;
+
+    ctx->m_callStack.SetLengthNoConstruct(length + CALLSTACK_FRAME_SIZE);
+    asPWORD* destination = ctx->m_callStack.AddressOf() + length;
+    for (unsigned index = 0; index < 5; index++)
+        destination[index] = saved[index];
+    return true;
+}
+
+void PopJitCallState(asCContext* ctx) {
+    const asUINT length = ctx->m_callStack.GetLength();
+    asPWORD* source = ctx->m_callStack.AddressOf() +
+                      length - CALLSTACK_FRAME_SIZE;
+    asPWORD saved[5];
+    for (unsigned index = 0; index < 5; index++)
+        saved[index] = source[index];
+
+    ctx->m_regs.stackFramePointer =
+        reinterpret_cast<asDWORD*>(saved[0]);
+    ctx->m_currentFunction =
+        reinterpret_cast<asCScriptFunction*>(saved[1]);
+    ctx->m_regs.programPointer = reinterpret_cast<asDWORD*>(saved[2]);
+    ctx->m_regs.stackPointer = reinterpret_cast<asDWORD*>(saved[3]);
+    ctx->m_stackIndex = static_cast<asUINT>(saved[4]);
+    ctx->m_callStack.SetLengthNoConstruct(length - CALLSTACK_FRAME_SIZE);
+}
+
+bool ReserveJitStackSpace(asCContext* ctx, asUINT size) {
+    if (ctx->m_stackBlocks.GetLength() &&
+        ctx->m_regs.stackPointer - (size + RESERVE_STACK) >=
+            ctx->m_stackBlocks[ctx->m_stackIndex])
+        return true;
+    return ctx->ReserveStackSpace(size);
+}
+
 template <typename Return>
 Return InvokeStdcall(asFUNCTION_t function, const asDWORD* arguments,
                      int argumentCount) {
@@ -157,13 +202,13 @@ Return InvokeSimpleSystemFunction(asSSystemFunctionInterface* system,
 
 void PrepareScriptCall(asCContext* ctx, asCScriptFunction* function) {
     assert(function->scriptData);
-    if (ctx->PushCallState() < 0) return;
+    if (!PushJitCallState(ctx)) return;
 
     ctx->m_currentFunction = function;
     ctx->m_regs.programPointer = function->scriptData->byteCode.AddressOf();
 
     asDWORD* oldStackPointer = ctx->m_regs.stackPointer;
-    if (!ctx->ReserveStackSpace(function->scriptData->stackNeeded)) return;
+    if (!ReserveJitStackSpace(ctx, function->scriptData->stackNeeded)) return;
 
     if (ctx->m_regs.stackPointer != oldStackPointer) {
         int argumentDwords = function->GetSpaceNeededForArguments() +
@@ -174,13 +219,18 @@ void PrepareScriptCall(asCContext* ctx, asCScriptFunction* function) {
     }
 
     ctx->m_regs.stackFramePointer = ctx->m_regs.stackPointer;
-    for (asUINT index = function->scriptData->variables.GetLength(); index-- > 0;) {
-        asSScriptVariable* variable = function->scriptData->variables[index];
-        if (variable->stackOffset <= 0) continue;
-        if (variable->onHeap &&
-            (variable->type.IsObject() || variable->type.IsFuncdef())) {
-            *reinterpret_cast<asPWORD*>(
-                &ctx->m_regs.stackFramePointer[-variable->stackOffset]) = 0;
+    if (function->scriptData->objVariableInfo.GetLength()) {
+        for (asUINT index = function->scriptData->variables.GetLength();
+             index-- > 0;) {
+            asSScriptVariable* variable =
+                function->scriptData->variables[index];
+            if (variable->stackOffset <= 0) continue;
+            if (variable->onHeap &&
+                (variable->type.IsObject() || variable->type.IsFuncdef())) {
+                *reinterpret_cast<asPWORD*>(
+                    &ctx->m_regs.stackFramePointer[-variable->stackOffset]) =
+                    0;
+            }
         }
     }
 
@@ -264,7 +314,7 @@ int BcRet(asSVMRegisters* regs, const asDWORD* bc) {
         return JITBC_EXIT;
     }
     asWORD popSize = asBC_WORDARG0(bc);
-    ctx->PopCallState();
+    PopJitCallState(ctx);
     regs->stackPointer += popSize;
     return JITBC_EXIT;
 }

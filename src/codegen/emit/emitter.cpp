@@ -11,9 +11,11 @@
 namespace asjitx86::emit {
 
 FunctionEmitter::FunctionEmitter(asmjit::JitRuntime& runtime,
+                                 detail::ScalarObjectPool& objectPool,
                                  asIScriptFunction* function,
                                  asJITFunction* out)
-    : runtime_(runtime), function_(function), out_(out) {}
+    : runtime_(runtime), objectPool_(objectPool), function_(function),
+      out_(out) {}
 
 int FunctionEmitter::Run() {
     *out_ = nullptr;
@@ -43,6 +45,17 @@ bool FunctionEmitter::InitializeCompiler() {
     fp_ = cc.new_gp32("fp");
     cc.mov(fp_, x86::dword_ptr(
                     regs_, offsetof(asSVMRegisters, stackFramePointer)));
+
+    if (cacheLocals_) {
+        cachedLocals_.resize(
+            static_cast<size_t>(scriptFunction_->scriptData->variableSpace) +
+            1);
+        for (size_t offset = 1; offset < cachedLocals_.size(); offset++) {
+            cachedLocals_[offset] = cc.new_gp32("cachedLocal");
+            cc.mov(cachedLocals_[offset],
+                   x86::dword_ptr(fp_, -static_cast<int>(offset) * 4));
+        }
+    }
 
     labels_.resize(instructions_.size());
     for (size_t i = 0; i < instructions_.size(); i++) {
@@ -87,11 +100,71 @@ bool FunctionEmitter::EmitInstruction(size_t index,
 
 void FunctionEmitter::LoadVar(int offset,
                               const asmjit::x86::Gp& destination) {
-    Compiler().mov(destination, asmjit::x86::dword_ptr(fp_, -offset * 4));
+    if (cacheLocals_ && offset > 0 &&
+        static_cast<size_t>(offset) < cachedLocals_.size())
+        Compiler().mov(destination,
+                       cachedLocals_[static_cast<size_t>(offset)]);
+    else
+        Compiler().mov(destination,
+                       asmjit::x86::dword_ptr(fp_, -offset * 4));
 }
 
 void FunctionEmitter::StoreVar(int offset, const asmjit::x86::Gp& source) {
-    Compiler().mov(asmjit::x86::dword_ptr(fp_, -offset * 4), source);
+    if (cacheLocals_ && offset > 0 &&
+        static_cast<size_t>(offset) < cachedLocals_.size())
+        Compiler().mov(cachedLocals_[static_cast<size_t>(offset)], source);
+    else
+        Compiler().mov(asmjit::x86::dword_ptr(fp_, -offset * 4), source);
+}
+
+void FunctionEmitter::LoadVar64(int offset,
+                                const asmjit::x86::Vec& destination) {
+    using namespace asmjit;
+    auto& cc = Compiler();
+    if (cacheLocals_ && offset > 1 &&
+        static_cast<size_t>(offset) < cachedLocals_.size()) {
+        x86::Vec high = cc.new_xmm("cachedHigh64");
+        cc.movd(destination, cachedLocals_[static_cast<size_t>(offset)]);
+        cc.movd(high, cachedLocals_[static_cast<size_t>(offset - 1)]);
+        cc.psllq(high, 32);
+        cc.por(destination, high);
+    } else {
+        cc.movq(destination, x86::qword_ptr(fp_, -offset * 4));
+    }
+}
+
+void FunctionEmitter::StoreVar64(int offset,
+                                 const asmjit::x86::Vec& source) {
+    using namespace asmjit;
+    auto& cc = Compiler();
+    if (cacheLocals_ && offset > 1 &&
+        static_cast<size_t>(offset) < cachedLocals_.size()) {
+        x86::Vec high = cc.new_xmm("cachedHigh64");
+        cc.movd(cachedLocals_[static_cast<size_t>(offset)], source);
+        cc.movq(high, source);
+        cc.psrlq(high, 32);
+        cc.movd(cachedLocals_[static_cast<size_t>(offset - 1)], high);
+    } else {
+        cc.movq(x86::qword_ptr(fp_, -offset * 4), source);
+    }
+}
+
+void FunctionEmitter::FlushCachedLocals() {
+    if (!cacheLocals_) return;
+    auto& cc = Compiler();
+    for (size_t offset = 1; offset < cachedLocals_.size(); offset++)
+        cc.mov(asmjit::x86::dword_ptr(
+                   fp_, -static_cast<int>(offset) * 4),
+               cachedLocals_[offset]);
+}
+
+void FunctionEmitter::ReloadCachedLocals() {
+    if (!cacheLocals_) return;
+    auto& cc = Compiler();
+    for (size_t offset = 1; offset < cachedLocals_.size(); offset++)
+        cc.mov(cachedLocals_[offset],
+               asmjit::x86::dword_ptr(
+                   fp_, -static_cast<int>(offset) * 4));
 }
 
 void FunctionEmitter::LoadSp(const asmjit::x86::Gp& destination) {
@@ -113,6 +186,7 @@ bool FunctionEmitter::EmitHelperCall(const Instruction& instruction,
     JitBcHelper helper = GetJitBcHelper(instruction.op);
     if (!helper) return false;
     auto& cc = Compiler();
+    FlushCachedLocals();
     InvokeNode* invocation = nullptr;
     Error err = cc.invoke(Out<InvokeNode*>(invocation),
                           Imm(int64_t((intptr_t)helper)),
@@ -123,6 +197,7 @@ bool FunctionEmitter::EmitHelperCall(const Instruction& instruction,
     invocation->set_arg(0, regs_);
     invocation->set_arg(1, Imm(int64_t((intptr_t)ip)));
     invocation->set_ret(0, result);
+    if (instruction.op != asBC_RET) ReloadCachedLocals();
     cc.test(result, result);
     cc.jnz(exitLabel_);
     return true;
@@ -133,6 +208,7 @@ bool FunctionEmitter::EmitInternalException(size_t index, const asDWORD* ip,
     using namespace asmjit;
 
     auto& cc = Compiler();
+    FlushCachedLocals();
     InvokeNode* invocation = nullptr;
     const int catchTarget = localCatchTarget_[index];
     if (catchTarget >= 0) {
@@ -186,6 +262,7 @@ bool FunctionEmitter::Finalize() {
 
     auto& cc = Compiler();
     cc.bind(exitLabel_);
+    FlushCachedLocals();
     cc.end_func();
     Error err = cc.finalize();
     if (err != kErrorOk) return false;

@@ -12,6 +12,10 @@
 class asCScriptEngine;
 class asCScriptFunction;
 
+namespace asjitx86::detail {
+class ScalarObjectPool;
+}
+
 namespace asjitx86::emit {
 
 struct Instruction {
@@ -28,8 +32,9 @@ enum class EmitResult {
 
 class FunctionEmitter final {
 public:
-    FunctionEmitter(asmjit::JitRuntime& runtime, asIScriptFunction* function,
-                    asJITFunction* out);
+    FunctionEmitter(asmjit::JitRuntime& runtime,
+                    detail::ScalarObjectPool& objectPool,
+                    asIScriptFunction* function, asJITFunction* out);
 
     int Run();
 
@@ -64,6 +69,10 @@ private:
 
     void LoadVar(int offset, const asmjit::x86::Gp& destination);
     void StoreVar(int offset, const asmjit::x86::Gp& source);
+    void LoadVar64(int offset, const asmjit::x86::Vec& destination);
+    void StoreVar64(int offset, const asmjit::x86::Vec& source);
+    void FlushCachedLocals();
+    void ReloadCachedLocals();
     void LoadSp(const asmjit::x86::Gp& destination);
     void StoreSp(const asmjit::x86::Gp& source);
     bool EmitHelperCall(const Instruction& instruction, const asDWORD* ip);
@@ -76,6 +85,7 @@ private:
     asmjit::x86::Compiler& Compiler();
 
     asmjit::JitRuntime& runtime_;
+    detail::ScalarObjectPool& objectPool_;
     asIScriptFunction* function_;
     asJITFunction* out_;
     asCScriptEngine* engine_ = nullptr;
@@ -83,6 +93,7 @@ private:
     asDWORD* bytecode_ = nullptr;
     asUINT bytecodeLength_ = 0;
     bool inlineFieldMemory_ = false;
+    bool cacheLocals_ = false;
 
     std::vector<Instruction> instructions_;
     std::vector<int> indexOfOffset_;
@@ -98,6 +109,7 @@ private:
     asmjit::x86::Gp regs_;
     asmjit::x86::Gp jitArg_;
     asmjit::x86::Gp fp_;
+    std::vector<asmjit::x86::Gp> cachedLocals_;
     std::vector<asmjit::Label> labels_;
     asmjit::Label exitLabel_;
 };

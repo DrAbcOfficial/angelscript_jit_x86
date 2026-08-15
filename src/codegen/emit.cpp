@@ -3,9 +3,10 @@
 
 namespace asjitx86 {
 
-int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function,
-                 asJITFunction* out) {
-    return emit::FunctionEmitter(runtime, function, out).Run();
+int EmitFunction(asmjit::JitRuntime& runtime,
+                 detail::ScalarObjectPool& objectPool,
+                 asIScriptFunction* function, asJITFunction* out) {
+    return emit::FunctionEmitter(runtime, objectPool, function, out).Run();
 }
 
 }

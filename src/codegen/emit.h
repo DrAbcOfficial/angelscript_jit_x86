@@ -6,6 +6,12 @@
 
 namespace asjitx86 {
 
-int EmitFunction(asmjit::JitRuntime& runtime, asIScriptFunction* function, asJITFunction* out);
+namespace detail {
+class ScalarObjectPool;
+}
+
+int EmitFunction(asmjit::JitRuntime& runtime,
+                 detail::ScalarObjectPool& objectPool,
+                 asIScriptFunction* function, asJITFunction* out);
 
 }

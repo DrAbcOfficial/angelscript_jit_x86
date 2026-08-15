@@ -124,6 +124,7 @@ public:
 	int  CopyFromAs(const asCScriptObject *other, asCObjectType *objType);
 
 	void CallDestructor();
+	bool ReleaseScalarOnlyWithoutFree() const;
 
 //=============================================
 // Properties

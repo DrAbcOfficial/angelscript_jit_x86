@@ -2,10 +2,32 @@
 
 #include "angelscript.h"
 
+#include <memory>
+
 class asCObjectType;
 class asCScriptFunction;
 
 namespace asjitx86::detail {
+
+struct ScalarObjectPoolBucket;
+
+class ScalarObjectPool {
+public:
+    explicit ScalarObjectPool(asIScriptEngine* engine);
+    ~ScalarObjectPool();
+
+    ScalarObjectPoolBucket* GetBucket(asCObjectType* objectType);
+    void Clear();
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
+
+bool IsScalarOnlyScriptObject(asCObjectType* objectType);
+void* CreatePooledScriptObject(ScalarObjectPoolBucket* bucket);
+void ReleasePooledScriptObject(void* object,
+                               ScalarObjectPoolBucket* bucket);
 
 int BcAlloc(asSVMRegisters* regs, const asDWORD* bc);
 int AllocScriptObject(asSVMRegisters* regs, asCObjectType* objectType,

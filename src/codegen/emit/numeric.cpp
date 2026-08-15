@@ -70,16 +70,20 @@ EmitResult FunctionEmitter::EmitNumeric(size_t index,
     case asBC_iTOd: {
         const int destination = asBC_SWORDARG0(ip);
         const int source = asBC_SWORDARG1(ip);
+        x86::Gp sourceValue = cc.new_gp32("sourceValue");
         x86::Vec value = cc.new_xmm_sd("value");
-        cc.cvtsi2sd(value, x86::dword_ptr(fp_, -source * 4));
-        cc.movsd(x86::qword_ptr(fp_, -destination * 4), value);
+        LoadVar(source, sourceValue);
+        cc.cvtsi2sd(value, sourceValue);
+        StoreVar64(destination, value);
         return EmitResult::Success;
     }
     case asBC_dTOi: {
         const int destination = asBC_SWORDARG0(ip);
         const int source = asBC_SWORDARG1(ip);
         x86::Gp value = cc.new_gp32("value");
-        cc.cvttsd2si(value, x86::qword_ptr(fp_, -source * 4));
+        x86::Vec sourceValue = cc.new_xmm_sd("sourceValue");
+        LoadVar64(source, sourceValue);
+        cc.cvttsd2si(value, sourceValue);
         StoreVar(destination, value);
         return EmitResult::Success;
     }
@@ -121,15 +125,23 @@ EmitResult FunctionEmitter::EmitNumeric(size_t index,
         const int destination = asBC_SWORDARG0(ip);
         const int left = asBC_SWORDARG1(ip);
         const int right = asBC_SWORDARG2(ip);
+        x86::Gp leftBits = cc.new_gp32("leftBits");
+        x86::Gp rightBits = cc.new_gp32("rightBits");
+        x86::Gp resultBits = cc.new_gp32("resultBits");
         x86::Vec value = cc.new_xmm_ss("value");
-        cc.movss(value, x86::dword_ptr(fp_, -left * 4));
+        x86::Vec operand = cc.new_xmm_ss("operand");
+        LoadVar(left, leftBits);
+        LoadVar(right, rightBits);
+        cc.movd(value, leftBits);
+        cc.movd(operand, rightBits);
         if (instruction.op == asBC_ADDf)
-            cc.addss(value, x86::dword_ptr(fp_, -right * 4));
+            cc.addss(value, operand);
         else if (instruction.op == asBC_SUBf)
-            cc.subss(value, x86::dword_ptr(fp_, -right * 4));
+            cc.subss(value, operand);
         else
-            cc.mulss(value, x86::dword_ptr(fp_, -right * 4));
-        cc.movss(x86::dword_ptr(fp_, -destination * 4), value);
+            cc.mulss(value, operand);
+        cc.movd(resultBits, value);
+        StoreVar(destination, resultBits);
         return EmitResult::Success;
     }
     case asBC_ADDd:
@@ -139,14 +151,16 @@ EmitResult FunctionEmitter::EmitNumeric(size_t index,
         const int left = asBC_SWORDARG1(ip);
         const int right = asBC_SWORDARG2(ip);
         x86::Vec value = cc.new_xmm_sd("value");
-        cc.movsd(value, x86::qword_ptr(fp_, -left * 4));
+        x86::Vec operand = cc.new_xmm_sd("operand");
+        LoadVar64(left, value);
+        LoadVar64(right, operand);
         if (instruction.op == asBC_ADDd)
-            cc.addsd(value, x86::qword_ptr(fp_, -right * 4));
+            cc.addsd(value, operand);
         else if (instruction.op == asBC_SUBd)
-            cc.subsd(value, x86::qword_ptr(fp_, -right * 4));
+            cc.subsd(value, operand);
         else
-            cc.mulsd(value, x86::qword_ptr(fp_, -right * 4));
-        cc.movsd(x86::qword_ptr(fp_, -destination * 4), value);
+            cc.mulsd(value, operand);
+        StoreVar64(destination, value);
         return EmitResult::Success;
     }
     case asBC_DIVf: {
@@ -160,10 +174,18 @@ EmitResult FunctionEmitter::EmitNumeric(size_t index,
         cc.and_(divisorBits, 0x7FFFFFFF);
         cc.jz(fallback);
         {
+            x86::Gp leftBits = cc.new_gp32("leftBits");
+            x86::Gp rightBits = cc.new_gp32("rightBits");
+            x86::Gp resultBits = cc.new_gp32("resultBits");
             x86::Vec value = cc.new_xmm_ss("value");
-            cc.movss(value, x86::dword_ptr(fp_, -left * 4));
-            cc.divss(value, x86::dword_ptr(fp_, -right * 4));
-            cc.movss(x86::dword_ptr(fp_, -destination * 4), value);
+            x86::Vec operand = cc.new_xmm_ss("operand");
+            LoadVar(left, leftBits);
+            LoadVar(right, rightBits);
+            cc.movd(value, leftBits);
+            cc.movd(operand, rightBits);
+            cc.divss(value, operand);
+            cc.movd(resultBits, value);
+            StoreVar(destination, resultBits);
         }
         cc.jmp(done);
         cc.bind(fallback);
@@ -179,16 +201,18 @@ EmitResult FunctionEmitter::EmitNumeric(size_t index,
         x86::Gp high = cc.new_gp32("high");
         Label fallback = cc.new_label();
         Label done = cc.new_label();
-        cc.mov(zeroTest, x86::dword_ptr(fp_, -right * 4));
-        cc.mov(high, x86::dword_ptr(fp_, -right * 4 + 4));
+        LoadVar(right, zeroTest);
+        LoadVar(right - 1, high);
         cc.and_(high, 0x7FFFFFFF);
         cc.or_(zeroTest, high);
         cc.jz(fallback);
         {
             x86::Vec value = cc.new_xmm_sd("value");
-            cc.movsd(value, x86::qword_ptr(fp_, -left * 4));
-            cc.divsd(value, x86::qword_ptr(fp_, -right * 4));
-            cc.movsd(x86::qword_ptr(fp_, -destination * 4), value);
+            x86::Vec operand = cc.new_xmm_sd("operand");
+            LoadVar64(left, value);
+            LoadVar64(right, operand);
+            cc.divsd(value, operand);
+            StoreVar64(destination, value);
         }
         cc.jmp(done);
         cc.bind(fallback);
@@ -202,9 +226,12 @@ EmitResult FunctionEmitter::EmitNumeric(size_t index,
         const int destination = asBC_SWORDARG0(ip);
         const int source = asBC_SWORDARG1(ip);
         x86::Gp immediate = cc.new_gp32("immediate");
+        x86::Gp sourceBits = cc.new_gp32("sourceBits");
+        x86::Gp resultBits = cc.new_gp32("resultBits");
         x86::Vec value = cc.new_xmm_ss("value");
         x86::Vec operand = cc.new_xmm_ss("operand");
-        cc.movss(value, x86::dword_ptr(fp_, -source * 4));
+        LoadVar(source, sourceBits);
+        cc.movd(value, sourceBits);
         cc.mov(immediate,
                Imm(int64_t((int32_t)asBC_DWORDARG(ip + 1))));
         cc.movd(operand, immediate);
@@ -214,17 +241,26 @@ EmitResult FunctionEmitter::EmitNumeric(size_t index,
             cc.subss(value, operand);
         else
             cc.mulss(value, operand);
-        cc.movss(x86::dword_ptr(fp_, -destination * 4), value);
+        cc.movd(resultBits, value);
+        StoreVar(destination, resultBits);
         return EmitResult::Success;
     }
-    case asBC_NEGf:
-        cc.xor_(x86::dword_ptr(fp_, -asBC_SWORDARG0(ip) * 4),
-                Imm(int64_t(uint32_t(0x80000000u))));
+    case asBC_NEGf: {
+        const int destination = asBC_SWORDARG0(ip);
+        x86::Gp value = cc.new_gp32("value");
+        LoadVar(destination, value);
+        cc.xor_(value, Imm(int64_t(uint32_t(0x80000000u))));
+        StoreVar(destination, value);
         return EmitResult::Success;
-    case asBC_NEGd:
-        cc.xor_(x86::dword_ptr(fp_, -asBC_SWORDARG0(ip) * 4 + 4),
-                Imm(int64_t(uint32_t(0x80000000u))));
+    }
+    case asBC_NEGd: {
+        const int highOffset = asBC_SWORDARG0(ip) - 1;
+        x86::Gp value = cc.new_gp32("value");
+        LoadVar(highOffset, value);
+        cc.xor_(value, Imm(int64_t(uint32_t(0x80000000u))));
+        StoreVar(highOffset, value);
         return EmitResult::Success;
+    }
     case asBC_CMPf:
     case asBC_CMPd:
     case asBC_CMPIf: {
@@ -235,21 +271,17 @@ EmitResult FunctionEmitter::EmitNumeric(size_t index,
                              ? cc.new_xmm_sd("right")
                              : cc.new_xmm_ss("right");
         if (instruction.op == asBC_CMPd) {
-            cc.movsd(left,
-                     x86::qword_ptr(
-                         fp_, -asBC_SWORDARG0(ip) * 4));
-            cc.movsd(right,
-                     x86::qword_ptr(
-                         fp_, -asBC_SWORDARG1(ip) * 4));
+            LoadVar64(asBC_SWORDARG0(ip), left);
+            LoadVar64(asBC_SWORDARG1(ip), right);
             cc.ucomisd(left, right);
         } else {
-            cc.movss(left,
-                     x86::dword_ptr(
-                         fp_, -asBC_SWORDARG0(ip) * 4));
+            x86::Gp leftBits = cc.new_gp32("leftBits");
+            LoadVar(asBC_SWORDARG0(ip), leftBits);
+            cc.movd(left, leftBits);
             if (instruction.op == asBC_CMPf) {
-                cc.movss(right,
-                         x86::dword_ptr(
-                             fp_, -asBC_SWORDARG1(ip) * 4));
+                x86::Gp rightBits = cc.new_gp32("rightBits");
+                LoadVar(asBC_SWORDARG1(ip), rightBits);
+                cc.movd(right, rightBits);
             } else {
                 x86::Gp immediate = cc.new_gp32("immediate");
                 cc.mov(immediate,
@@ -398,10 +430,13 @@ EmitResult FunctionEmitter::EmitNumeric(size_t index,
     case asBC_DecVi: {
         if (kInlineIncDecV) {
             const int destination = asBC_SWORDARG0(ip);
+            x86::Gp value = cc.new_gp32("value");
+            LoadVar(destination, value);
             if (instruction.op == asBC_IncVi)
-                cc.inc(x86::dword_ptr(fp_, -destination * 4));
+                cc.inc(value);
             else
-                cc.dec(x86::dword_ptr(fp_, -destination * 4));
+                cc.dec(value);
+            StoreVar(destination, value);
         } else if (!EmitHelperCall(instruction, ip)) {
             return EmitResult::Error;
         }
