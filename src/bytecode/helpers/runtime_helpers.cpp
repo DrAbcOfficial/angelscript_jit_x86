@@ -565,22 +565,22 @@ int BcCallIntf(asSVMRegisters* regs, const asDWORD* bc) {
     return CallScriptFunction(regs, realFunction, nextBc);
 }
 
-int BcCallPtr(asSVMRegisters* regs, const asDWORD* bc) {
+int CallFunctionPointer(asSVMRegisters* regs, asCScriptFunction* func,
+                        const asDWORD* callBc, const asDWORD* nextBc) {
     auto* ctx = Ctx(regs);
     asUINT callerCallStackLength = ctx->m_callStack.GetLength();
-    asCScriptFunction* func = *(asCScriptFunction**)(regs->stackFramePointer - asBC_SWORDARG0(bc));
     bool systemCall = false;
     bool scriptCall = false;
-    regs->programPointer = const_cast<asDWORD*>(bc);
+    regs->programPointer = const_cast<asDWORD*>(callBc);
     if (func == 0) {
-        regs->programPointer++;
+        regs->programPointer = const_cast<asDWORD*>(nextBc);
         ctx->m_needToCleanupArgs = true;
         ctx->SetInternalException(TXT_UNBOUND_FUNCTION);
         return JITBC_EXIT;
     }
     if (func->funcType == asFUNC_SCRIPT) {
-        regs->programPointer++;
-        ctx->CallScriptFunction(func);
+        regs->programPointer = const_cast<asDWORD*>(nextBc);
+        PrepareScriptCall(ctx, func);
         scriptCall = true;
     }
     else if (func->funcType == asFUNC_DELEGATE) {
@@ -588,11 +588,11 @@ int BcCallPtr(asSVMRegisters* regs, const asDWORD* bc) {
         *(asPWORD*)regs->stackPointer = asPWORD(func->objForDelegate);
         if (func->funcForDelegate->funcType == asFUNC_SYSTEM) {
             regs->stackPointer += CallSystemFunction(func->funcForDelegate->id, ctx);
-            regs->programPointer++;
+            regs->programPointer = const_cast<asDWORD*>(nextBc);
             systemCall = true;
         }
         else {
-            regs->programPointer++;
+            regs->programPointer = const_cast<asDWORD*>(nextBc);
             ctx->CallInterfaceMethod(func->funcForDelegate);
             scriptCall = true;
         }
@@ -601,11 +601,11 @@ int BcCallPtr(asSVMRegisters* regs, const asDWORD* bc) {
         regs->stackPointer += CanUseFastSystemCall(func)
                                    ? FastSystemCall(regs, func)
                                    : CallSystemFunction(func->id, ctx);
-        regs->programPointer++;
+        regs->programPointer = const_cast<asDWORD*>(nextBc);
         systemCall = true;
     }
     else if (func->funcType == asFUNC_IMPORTED) {
-        regs->programPointer++;
+        regs->programPointer = const_cast<asDWORD*>(nextBc);
         int funcId = ctx->m_engine->importedFunctions[func->id & ~FUNC_IMPORTED]->boundFunctionId;
         if (funcId > 0) {
             ctx->CallScriptFunction(ctx->m_engine->scriptFunctions[funcId]);
@@ -621,6 +621,16 @@ int BcCallPtr(asSVMRegisters* regs, const asDWORD* bc) {
     if (scriptCall)
         return ResumeJitCallChain(regs, callerCallStackLength);
     return systemCall && ctx->m_status == asEXECUTION_ACTIVE ? JITBC_CONTINUE : JITBC_EXIT;
+}
+
+void ReleaseScriptFunction(asCScriptFunction* function) {
+    function->Release();
+}
+
+int BcCallPtr(asSVMRegisters* regs, const asDWORD* bc) {
+    auto* func = *reinterpret_cast<asCScriptFunction**>(
+        regs->stackFramePointer - asBC_SWORDARG0(bc));
+    return CallFunctionPointer(regs, func, bc, NextBc(bc, 1));
 }
 
 int BcThiscall1(asSVMRegisters* regs, const asDWORD* bc) {

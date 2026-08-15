@@ -92,6 +92,8 @@ bool IsInlineScriptOp(asEBCInstr op) {
     case asBC_LOADOBJ:
     case asBC_ChkNullV:
     case asBC_RefCpyV:
+    case asBC_CallPtr:
+    case asBC_FREE:
     case asBC_RET:
         return true;
     default:
@@ -164,6 +166,13 @@ bool DecodeInlineScriptBody(asCScriptFunction* function,
                     return false;
                 factoryObjectLocal = -1;
             }
+        } else if (op == asBC_FREE) {
+            auto* objectType = reinterpret_cast<asCObjectType*>(
+                asBC_PTRARG(instruction));
+            if (!objectType ||
+                (!(objectType->flags & asOBJ_FUNCDEF) &&
+                 objectType != &function->engine->functionBehaviours))
+                return false;
         } else if (pendingFactoryObject && op != asBC_JitEntry) {
             return false;
         }
@@ -1030,6 +1039,48 @@ EmitResult FunctionEmitter::EmitCalls(size_t index,
                 x86::Gp zero = cc.new_gp32("inlineZeroObject");
                 cc.xor_(zero, zero);
                 storeValue(asBC_SWORDARG0(bodyIp), zero);
+                break;
+            }
+            case asBC_CallPtr: {
+                x86::Gp function = cc.new_gp32("inlineFunctionPointer");
+                loadValue(asBC_SWORDARG0(bodyIp), function);
+                InvokeNode* invocation = nullptr;
+                Error err = cc.invoke(
+                    Out<InvokeNode*>(invocation),
+                    Imm(int64_t((intptr_t)&detail::CallFunctionPointer)),
+                    FuncSignature::build<int, asSVMRegisters*,
+                                         asCScriptFunction*,
+                                         const asDWORD*, const asDWORD*>());
+                if (err != kErrorOk) return false;
+                x86::Gp result = cc.new_gp32("inlineFunctionResult");
+                invocation->set_arg(0, regs_);
+                invocation->set_arg(1, function);
+                invocation->set_arg(2, Imm(int64_t((intptr_t)ip)));
+                invocation->set_arg(
+                    3, Imm(int64_t((intptr_t)(ip + instruction.size))));
+                invocation->set_ret(0, result);
+                cc.test(result, result);
+                cc.jnz(exitLabel_);
+                break;
+            }
+            case asBC_FREE: {
+                const int offset = asBC_SWORDARG0(bodyIp);
+                x86::Gp function = cc.new_gp32("inlineReleasedFunction");
+                loadValue(offset, function);
+                Label released = cc.new_label();
+                cc.test(function, function);
+                cc.jz(released);
+                InvokeNode* invocation = nullptr;
+                Error err = cc.invoke(
+                    Out<InvokeNode*>(invocation),
+                    Imm(int64_t((intptr_t)&detail::ReleaseScriptFunction)),
+                    FuncSignature::build<void, asCScriptFunction*>());
+                if (err != kErrorOk) return false;
+                invocation->set_arg(0, function);
+                cc.bind(released);
+                x86::Gp zero = cc.new_gp32("inlineZeroFunction");
+                cc.xor_(zero, zero);
+                storeValue(offset, zero);
                 break;
             }
             case asBC_RET:
