@@ -3,6 +3,7 @@
 #include "angelscript.h"
 
 class asCScriptFunction;
+struct asSTryCatchInfo;
 
 namespace asjitx86::detail {
 
@@ -21,13 +22,15 @@ bool CanUseFastSystemCall(asCScriptFunction* function);
 int FastSystemCall(asSVMRegisters* regs, asCScriptFunction* function);
 int FinishSystemCall(asSVMRegisters* regs);
 int FinishSystemCallAt(asSVMRegisters* regs, asCScriptFunction* function,
-                       const asDWORD* catchBc);
+                       const asSTryCatchInfo* catchInfo,
+                       int catchNeedsCleanup);
 void RaiseInternalException(asSVMRegisters* regs, const asDWORD* bc,
                             const char* message);
 int RaiseAndCatchInternalException(asSVMRegisters* regs, const asDWORD* bc,
                                    const char* message,
                                    asCScriptFunction* function,
-                                   const asDWORD* catchBc);
+                                   const asSTryCatchInfo* catchInfo,
+                                   int catchNeedsCleanup);
 int BcCallBnd(asSVMRegisters* regs, const asDWORD* bc);
 int BcCallIntf(asSVMRegisters* regs, const asDWORD* bc);
 int BcCallPtr(asSVMRegisters* regs, const asDWORD* bc);

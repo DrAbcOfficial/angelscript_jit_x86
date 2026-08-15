@@ -240,6 +240,8 @@ bool FunctionEmitter::AnalyzeBytecode() {
     if (!DecodeInstructions()) return false;
     needsLabel_.assign(instructions_.size(), 0);
     localCatchTarget_.assign(instructions_.size(), -1);
+    localCatchInfo_.assign(instructions_.size(), nullptr);
+    localCatchNeedsCleanup_.assign(instructions_.size(), 1);
     refCopyFusionSpan_.assign(instructions_.size(), 0);
     refCopyFusionSkip_.assign(instructions_.size(), 0);
     fusedCmpBranch_.assign(instructions_.size(), 0);
@@ -301,6 +303,7 @@ bool FunctionEmitter::AnalyzeCatchTargets() {
     if (!scriptFunction_->scriptData) return true;
     for (size_t i = 0; i < instructions_.size(); i++) {
         int catchTarget = -1;
+        const asSTryCatchInfo* catchInfo = nullptr;
         for (asUINT tryIndex = 0;
              tryIndex < scriptFunction_->scriptData->tryCatchInfo.GetLength();
              tryIndex++) {
@@ -310,10 +313,28 @@ bool FunctionEmitter::AnalyzeCatchTargets() {
                 instructions_[i].off < info.catchPos) {
                 if (info.catchPos >= bytecodeLength_) return false;
                 catchTarget = indexOfOffset_[info.catchPos];
+                catchInfo = &info;
             }
         }
         if (catchTarget >= 0) {
             localCatchTarget_[i] = catchTarget;
+            localCatchInfo_[i] = catchInfo;
+            bool needsCleanup = false;
+            for (asUINT objectIndex = 0;
+                 objectIndex <
+                     scriptFunction_->scriptData->objVariableInfo.GetLength();
+                 objectIndex++) {
+                const asSObjectVariableInfo& objectInfo =
+                    scriptFunction_->scriptData->objVariableInfo[objectIndex];
+                if (objectInfo.programPos >= catchInfo->tryPos &&
+                    objectInfo.programPos < catchInfo->catchPos &&
+                    (objectInfo.option == asOBJ_INIT ||
+                     objectInfo.option == asOBJ_VARDECL)) {
+                    needsCleanup = true;
+                    break;
+                }
+            }
+            localCatchNeedsCleanup_[i] = needsCleanup ? 1 : 0;
             needsLabel_[static_cast<size_t>(catchTarget)] = 1;
         }
     }

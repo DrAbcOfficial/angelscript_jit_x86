@@ -4843,6 +4843,16 @@ int asCContext::SetException(const char *descr, bool allowCatch)
 
 void asCContext::SetInternalException(const char *descr, bool allowCatch)
 {
+	SetInternalExceptionImpl(descr, allowCatch, false);
+}
+
+void asCContext::SetInternalExceptionAtCatch(const char *descr)
+{
+	SetInternalExceptionImpl(descr, true, true);
+}
+
+void asCContext::SetInternalExceptionImpl(const char *descr, bool allowCatch, bool knownCatch)
+{
 	if( m_inExceptionHandler )
 	{
 		asASSERT(false); // Shouldn't happen
@@ -4869,7 +4879,7 @@ void asCContext::SetInternalException(const char *descr, bool allowCatch)
 	}
 
 	// Recursively search the callstack for try/catch blocks
-	m_exceptionWillBeCaught = allowCatch && FindExceptionTryCatch();
+	m_exceptionWillBeCaught = allowCatch && (knownCatch || FindExceptionTryCatch());
 
 	if( m_exceptionCallback )
 		CallExceptionCallback();
@@ -4930,12 +4940,12 @@ void asCContext::CleanReturnObject()
 	}
 }
 
-void asCContext::CleanStack(bool catchException)
+void asCContext::CleanStack(bool catchException, const asSTryCatchInfo *knownTryCatch)
 {
 	m_inExceptionHandler = true;
 
 	// Run the clean up code and move to catch block
-	bool caught = CleanStackFrame(catchException);
+	bool caught = CleanStackFrame(catchException, knownTryCatch);
 	if( !caught )
 	{
 		// Set the status to exception so that the stack unwind is done correctly.
@@ -5287,10 +5297,10 @@ bool asCContext::FindExceptionTryCatch()
 	return false;
 }
 
-bool asCContext::CleanStackFrame(bool catchException)
+bool asCContext::CleanStackFrame(bool catchException, const asSTryCatchInfo *knownTryCatch)
 {
 	bool exceptionCaught = false;
-	asSTryCatchInfo *tryCatchInfo = 0;
+	const asSTryCatchInfo *tryCatchInfo = 0;
 
 	// Clean object variables on the stack
 	// If the stack memory is not allocated or the program pointer
@@ -5308,16 +5318,24 @@ bool asCContext::CleanStackFrame(bool catchException)
 		{
 			asUINT currPos = asUINT(m_regs.programPointer - m_currentFunction->scriptData->byteCode.AddressOf());
 
-			for (asUINT n = 0; n < m_currentFunction->scriptData->tryCatchInfo.GetLength(); n++)
+			if (knownTryCatch && currPos >= knownTryCatch->tryPos && currPos < knownTryCatch->catchPos)
 			{
-				if (currPos >= m_currentFunction->scriptData->tryCatchInfo[n].tryPos &&
-					currPos < m_currentFunction->scriptData->tryCatchInfo[n].catchPos)
+				tryCatchInfo = knownTryCatch;
+				exceptionCaught = true;
+			}
+			else
+			{
+				for (asUINT n = 0; n < m_currentFunction->scriptData->tryCatchInfo.GetLength(); n++)
 				{
-					tryCatchInfo = &m_currentFunction->scriptData->tryCatchInfo[n];
-					exceptionCaught = true;
+					if (currPos >= m_currentFunction->scriptData->tryCatchInfo[n].tryPos &&
+						currPos < m_currentFunction->scriptData->tryCatchInfo[n].catchPos)
+					{
+						tryCatchInfo = &m_currentFunction->scriptData->tryCatchInfo[n];
+						exceptionCaught = true;
+					}
+					if (currPos < m_currentFunction->scriptData->tryCatchInfo[n].tryPos)
+						break;
 				}
-				if (currPos < m_currentFunction->scriptData->tryCatchInfo[n].tryPos)
-					break;
 			}
 		}
 
@@ -5327,7 +5345,15 @@ bool asCContext::CleanStackFrame(bool catchException)
 
 		// Determine which object variables that are really live ones
 		asCArray<int> liveObjects;
-		DetermineLiveObjects(liveObjects, 0);
+		bool hasStackObjects = false;
+		for (asUINT n = 0; n < m_currentFunction->scriptData->variables.GetLength(); n++)
+			if (!m_currentFunction->scriptData->variables[n]->onHeap)
+			{
+				hasStackObjects = true;
+				break;
+			}
+		if (hasStackObjects)
+			DetermineLiveObjects(liveObjects, 0);
 
 		for (asUINT n = 0; n < m_currentFunction->scriptData->variables.GetLength(); n++)
 		{

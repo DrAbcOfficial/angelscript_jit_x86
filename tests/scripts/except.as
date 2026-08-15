@@ -1,8 +1,17 @@
 string g_out;
+int g_exceptionDestroyed;
 
 class Obj
 {
     int v;
+}
+
+class ExceptionGuard
+{
+    ~ExceptionGuard()
+    {
+        g_exceptionDestroyed++;
+    }
 }
 
 int main()
@@ -49,6 +58,43 @@ int main()
     catch
     {
         g_out += "caught-div0\n";
+    }
+
+    try
+    {
+        ExceptionGuard value;
+        RaiseError();
+    }
+    catch
+    {
+        g_out += "cleaned-value-" + itos(g_exceptionDestroyed) + "\n";
+    }
+
+    try
+    {
+        ExceptionGuard@ handle = ExceptionGuard();
+        RaiseError();
+    }
+    catch
+    {
+        g_out += "cleaned-handle-" + itos(g_exceptionDestroyed) + "\n";
+    }
+
+    try
+    {
+        try
+        {
+            int zero = 0;
+            int value = 1 / zero;
+        }
+        catch
+        {
+            g_out += "caught-inner\n";
+        }
+    }
+    catch
+    {
+        g_out += "caught-outer\n";
     }
 
     g_out += "after\n";

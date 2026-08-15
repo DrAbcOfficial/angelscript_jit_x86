@@ -1291,7 +1291,8 @@ EmitResult FunctionEmitter::EmitCalls(size_t index,
                 Out<InvokeNode*>(finish),
                 Imm(int64_t((intptr_t)&detail::FinishSystemCallAt)),
                 FuncSignature::build<int, asSVMRegisters*,
-                                     asCScriptFunction*, const asDWORD*>());
+                                     asCScriptFunction*,
+                                     const asSTryCatchInfo*, int>());
         } else {
             err = cc.invoke(
                 Out<InvokeNode*>(finish),
@@ -1302,11 +1303,11 @@ EmitResult FunctionEmitter::EmitCalls(size_t index,
         x86::Gp result = cc.new_gp32("systemCallResult");
         finish->set_arg(0, regs_);
         if (catchTarget >= 0) {
-            const asDWORD* catchBc = bytecode_ +
-                instructions_[static_cast<size_t>(catchTarget)].off;
             finish->set_arg(
                 1, Imm(int64_t((intptr_t)scriptFunction_)));
-            finish->set_arg(2, Imm(int64_t((intptr_t)catchBc)));
+            finish->set_arg(
+                2, Imm(int64_t((intptr_t)localCatchInfo_[index])));
+            finish->set_arg(3, localCatchNeedsCleanup_[index]);
         }
         finish->set_ret(0, result);
         if (catchTarget >= 0) {

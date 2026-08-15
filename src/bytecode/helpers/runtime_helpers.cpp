@@ -450,12 +450,37 @@ int FinishSystemCall(asSVMRegisters* regs) {
     return ctx->m_status == asEXECUTION_ACTIVE ? JITBC_CONTINUE : JITBC_EXIT;
 }
 
+static void CatchLocalException(asCContext* ctx, asSVMRegisters* regs,
+                                asCScriptFunction* function,
+                                const asSTryCatchInfo* catchInfo,
+                                int catchNeedsCleanup) {
+    if (!catchNeedsCleanup && ctx->m_status == asEXECUTION_EXCEPTION &&
+        ctx->m_currentFunction == function && function->scriptData &&
+        !ctx->m_needToCleanupArgs && !ctx->m_isStackMemoryNotAllocated &&
+        !ctx->m_inExceptionHandler && regs->programPointer) {
+        asDWORD* bytecode = function->scriptData->byteCode.AddressOf();
+        const asUINT current =
+            static_cast<asUINT>(regs->programPointer - bytecode);
+        if (current >= catchInfo->tryPos && current < catchInfo->catchPos) {
+            regs->programPointer = bytecode + catchInfo->catchPos;
+            ctx->m_status = asEXECUTION_ACTIVE;
+            return;
+        }
+    }
+    ctx->CleanStack(true,
+                    ctx->m_currentFunction == function ? catchInfo : nullptr);
+}
+
 int FinishSystemCallAt(asSVMRegisters* regs, asCScriptFunction* function,
-                       const asDWORD* catchBc) {
+                       const asSTryCatchInfo* catchInfo,
+                       int catchNeedsCleanup) {
     auto* ctx = Ctx(regs);
     if (ctx->m_status == asEXECUTION_EXCEPTION &&
         ctx->m_exceptionWillBeCaught) {
-        ctx->CleanStack(true);
+        CatchLocalException(ctx, regs, function, catchInfo,
+                            catchNeedsCleanup);
+        const asDWORD* catchBc = function->scriptData->byteCode.AddressOf() +
+                                 catchInfo->catchPos;
         if (ctx->m_status == asEXECUTION_ACTIVE &&
             ctx->m_currentFunction == function &&
             regs->programPointer == catchBc)
@@ -474,11 +499,16 @@ void RaiseInternalException(asSVMRegisters* regs, const asDWORD* bc,
 int RaiseAndCatchInternalException(asSVMRegisters* regs, const asDWORD* bc,
                                    const char* message,
                                    asCScriptFunction* function,
-                                   const asDWORD* catchBc) {
+                                   const asSTryCatchInfo* catchInfo,
+                                   int catchNeedsCleanup) {
     auto* ctx = Ctx(regs);
     regs->programPointer = const_cast<asDWORD*>(bc);
-    ctx->SetInternalException(message);
-    if (ctx->m_exceptionWillBeCaught) ctx->CleanStack(true);
+    ctx->SetInternalExceptionAtCatch(message);
+    if (ctx->m_exceptionWillBeCaught)
+        CatchLocalException(ctx, regs, function, catchInfo,
+                            catchNeedsCleanup);
+    const asDWORD* catchBc = function->scriptData->byteCode.AddressOf() +
+                             catchInfo->catchPos;
     return ctx->m_status == asEXECUTION_ACTIVE &&
            ctx->m_currentFunction == function &&
            regs->programPointer == catchBc ? JITBC_CONTINUE : JITBC_EXIT;

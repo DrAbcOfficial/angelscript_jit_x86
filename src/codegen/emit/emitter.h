@@ -11,6 +11,7 @@
 
 class asCScriptEngine;
 class asCScriptFunction;
+struct asSTryCatchInfo;
 
 namespace asjitx86::detail {
 class ScalarObjectPool;
@@ -99,6 +100,8 @@ private:
     std::vector<int> indexOfOffset_;
     std::vector<uint8_t> needsLabel_;
     std::vector<int> localCatchTarget_;
+    std::vector<const asSTryCatchInfo*> localCatchInfo_;
+    std::vector<uint8_t> localCatchNeedsCleanup_;
     std::vector<uint8_t> refCopyFusionSpan_;
     std::vector<uint8_t> refCopyFusionSkip_;
     std::vector<uint8_t> fusedCmpBranch_;

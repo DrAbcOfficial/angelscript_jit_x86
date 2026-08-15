@@ -217,16 +217,16 @@ bool FunctionEmitter::EmitInternalException(size_t index, const asDWORD* ip,
             Imm(int64_t((intptr_t)&detail::RaiseAndCatchInternalException)),
             FuncSignature::build<int, asSVMRegisters*, const asDWORD*,
                                  const char*, asCScriptFunction*,
-                                 const asDWORD*>());
+                                 const asSTryCatchInfo*, int>());
         if (err != kErrorOk) return false;
         x86::Gp result = cc.new_gp32("exceptionResult");
-        const asDWORD* catchBc =
-            bytecode_ + instructions_[static_cast<size_t>(catchTarget)].off;
         invocation->set_arg(0, regs_);
         invocation->set_arg(1, Imm(int64_t((intptr_t)ip)));
         invocation->set_arg(2, Imm(int64_t((intptr_t)message)));
         invocation->set_arg(3, Imm(int64_t((intptr_t)scriptFunction_)));
-        invocation->set_arg(4, Imm(int64_t((intptr_t)catchBc)));
+        invocation->set_arg(
+            4, Imm(int64_t((intptr_t)localCatchInfo_[index])));
+        invocation->set_arg(5, localCatchNeedsCleanup_[index]);
         invocation->set_ret(0, result);
         cc.test(result, result);
         cc.jnz(exitLabel_);

@@ -50,6 +50,7 @@ BEGIN_AS_NAMESPACE
 
 class asCScriptFunction;
 class asCScriptEngine;
+struct asSTryCatchInfo;
 
 class asCContext : public asIScriptContext
 {
@@ -163,8 +164,8 @@ public:
 	void DetachEngine();
 
 	void ExecuteNext();
-	void CleanStack(bool catchException = false);
-	bool CleanStackFrame(bool catchException = false);
+	void CleanStack(bool catchException = false, const asSTryCatchInfo *knownTryCatch = 0);
+	bool CleanStackFrame(bool catchException = false, const asSTryCatchInfo *knownTryCatch = 0);
 	void CleanArgsOnStack();
 	void CleanReturnObject();
 	void DetermineLiveObjects(asCArray<int> &liveObjects, asUINT stackLevel);
@@ -183,6 +184,8 @@ public:
 	asDWORD  SerializeStackPointer(asDWORD *) const;
 
 	void SetInternalException(const char *descr, bool allowCatch = true);
+	void SetInternalExceptionAtCatch(const char *descr);
+	void SetInternalExceptionImpl(const char *descr, bool allowCatch, bool knownCatch);
 	bool FindExceptionTryCatch();
 
 	// Must be protected for multiple accesses
