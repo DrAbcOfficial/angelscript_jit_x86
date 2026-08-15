@@ -4,8 +4,6 @@
 
 namespace asjitx86 {
 
-const asSBCInfo* GetBcInfo();
-
 int BcSize(asEBCInstr op);
 
 }

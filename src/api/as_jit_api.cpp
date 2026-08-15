@@ -17,8 +17,5 @@ void* AsJitCreateEngine(asIScriptEngine* engine) {
 
 void AsJitDestroyEngine(void* jitEngine) {
     if (!jitEngine) return;
-    try {
-        delete static_cast<asjitx86::JitEngine*>(jitEngine);
-    } catch (...) {
-    }
+    delete static_cast<asjitx86::JitEngine*>(jitEngine);
 }

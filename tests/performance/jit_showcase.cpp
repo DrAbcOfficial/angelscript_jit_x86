@@ -1172,10 +1172,8 @@ const CaseDef kCases[] = {
     {"shared-local", kSharedLocal, nullptr, nullptr, false},
 };
 
-void MessageCallback(const asSMessageInfo* msg, void* param) {
-    int* errs = static_cast<int*>(param);
+void MessageCallback(const asSMessageInfo* msg, void*) {
     if (msg->type == asMSGTYPE_ERROR) {
-        (*errs)++;
         std::fprintf(stderr, "  [msg] %s (%d,%d): %s\n", msg->section, msg->row, msg->col, msg->message);
     }
 }
@@ -1261,7 +1259,7 @@ struct RunResult {
     std::vector<asDWORD> outputs;
 };
 
-RunResult Run(asIScriptEngine* engine, asIScriptFunction* function) {
+RunResult Run(asIScriptFunction* function) {
     RunResult result;
     const asUINT parameterCount = function->GetParamCount();
     const int returnType = function->GetReturnTypeId();
@@ -1280,7 +1278,7 @@ RunResult Run(asIScriptEngine* engine, asIScriptFunction* function) {
         ? 1
         : sizeof(kScenarioInputs) / sizeof(kScenarioInputs[0]);
     for (int round = 0; round < 3; round++) {
-        asIScriptContext* context = engine->CreateContext();
+        asIScriptContext* context = function->GetEngine()->CreateContext();
         if (!context) return RunResult{};
         double elapsed = 0.0;
         for (size_t input = 0; input < inputCount; input++) {
@@ -1334,9 +1332,8 @@ int main() {
     interpreter->SetEngineProperty(asEP_BUILD_WITHOUT_LINE_CUES, true);
     jitEngine->SetEngineProperty(asEP_BUILD_WITHOUT_LINE_CUES, true);
 
-    int errs = 0;
-    interpreter->SetMessageCallback(asFUNCTION(MessageCallback), &errs, asCALL_CDECL);
-    jitEngine->SetMessageCallback(asFUNCTION(MessageCallback), &errs, asCALL_CDECL);
+    interpreter->SetMessageCallback(asFUNCTION(MessageCallback), nullptr, asCALL_CDECL);
+    jitEngine->SetMessageCallback(asFUNCTION(MessageCallback), nullptr, asCALL_CDECL);
 
     void* jit = AsJitCreateEngine(jitEngine);
     if (!jit) return 1;
@@ -1371,8 +1368,8 @@ int main() {
             failures++;
             continue;
         }
-        RunResult interpRun = Run(interpreter, interpFunc);
-        RunResult jitRun = Run(jitEngine, jitFunc);
+        RunResult interpRun = Run(interpFunc);
+        RunResult jitRun = Run(jitFunc);
         double interpMs = interpRun.best;
         double jitMs = jitRun.best;
         bool match = interpMs > 0.0 && jitMs > 0.0 && interpRun.outputs == jitRun.outputs;

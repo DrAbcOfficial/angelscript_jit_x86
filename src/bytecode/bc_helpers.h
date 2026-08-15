@@ -12,6 +12,5 @@ enum JitBcResult {
 using JitBcHelper = int (*)(asSVMRegisters*, const asDWORD*);
 
 JitBcHelper GetJitBcHelper(asEBCInstr op);
-int JitBcFallback(asSVMRegisters* regs, const asDWORD* bc);
 
 }

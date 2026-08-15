@@ -240,9 +240,4 @@ JitBcHelper GetJitBcHelper(asEBCInstr op) {
     }
 }
 
-int JitBcFallback(asSVMRegisters* regs, const asDWORD* bc) {
-    JitBcHelper helper = GetJitBcHelper(static_cast<asEBCInstr>(bc[0] & 0xFF));
-    return helper ? helper(regs, bc) : JITBC_EXIT;
-}
-
 }

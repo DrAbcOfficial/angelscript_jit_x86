@@ -66,10 +66,10 @@ asIScriptFunction* BuildImported(asIScriptEngine* engine, const char* name) {
     return function;
 }
 
-double Run(asIScriptEngine* engine, asIScriptFunction* function, asDWORD* result) {
+double Run(asIScriptFunction* function, asDWORD* result) {
     double best = std::numeric_limits<double>::max();
     for (int round = 0; round < 3; round++) {
-        asIScriptContext* context = engine->CreateContext();
+        asIScriptContext* context = function->GetEngine()->CreateContext();
         if (!context || context->Prepare(function) < 0) return -1.0;
         auto begin = std::chrono::steady_clock::now();
         int state = context->Execute();
@@ -127,8 +127,8 @@ int main() {
 
     asDWORD interpreterResult = 0;
     asDWORD jitResult = 0;
-    double interpreterMs = Run(interpreter, interpreterFunction, &interpreterResult);
-    double jitMs = Run(jitEngine, jitFunction, &jitResult);
+    double interpreterMs = Run(interpreterFunction, &interpreterResult);
+    double jitMs = Run(jitFunction, &jitResult);
     double speedup = interpreterMs / jitMs;
     std::printf("int-loop(1e7): interpreter=%.3f ms jit=%.3f ms speedup=%.2fx\n",
                 interpreterMs, jitMs, speedup);
@@ -143,8 +143,8 @@ int main() {
 
     asDWORD interpreterSystemResult = 0;
     asDWORD jitSystemResult = 0;
-    double interpreterSystemMs = Run(interpreter, interpreterSystemFunction, &interpreterSystemResult);
-    double jitSystemMs = Run(jitEngine, jitSystemFunction, &jitSystemResult);
+    double interpreterSystemMs = Run(interpreterSystemFunction, &interpreterSystemResult);
+    double jitSystemMs = Run(jitSystemFunction, &jitSystemResult);
     double systemSpeedup = interpreterSystemMs / jitSystemMs;
     std::printf("system-call-loop(1e6): interpreter=%.3f ms jit=%.3f ms speedup=%.2fx\n",
                 interpreterSystemMs, jitSystemMs, systemSpeedup);
@@ -160,8 +160,8 @@ int main() {
     asDWORD interpreterSystem64Result = 0;
     asDWORD jitSystem64Result = 0;
     double interpreterSystem64Ms =
-        Run(interpreter, interpreterSystem64Function, &interpreterSystem64Result);
-    double jitSystem64Ms = Run(jitEngine, jitSystem64Function, &jitSystem64Result);
+        Run(interpreterSystem64Function, &interpreterSystem64Result);
+    double jitSystem64Ms = Run(jitSystem64Function, &jitSystem64Result);
     double system64Speedup = interpreterSystem64Ms / jitSystem64Ms;
     std::printf("system-call64-loop(1e6): interpreter=%.3f ms jit=%.3f ms speedup=%.2fx\n",
                 interpreterSystem64Ms, jitSystem64Ms, system64Speedup);
@@ -173,8 +173,8 @@ int main() {
 
     asDWORD interpreterFunctionResult = 0;
     asDWORD jitFunctionResult = 0;
-    double interpreterFunctionMs = Run(interpreter, interpreterFunctionCall, &interpreterFunctionResult);
-    double jitFunctionMs = Run(jitEngine, jitFunctionCall, &jitFunctionResult);
+    double interpreterFunctionMs = Run(interpreterFunctionCall, &interpreterFunctionResult);
+    double jitFunctionMs = Run(jitFunctionCall, &jitFunctionResult);
     double functionSpeedup = interpreterFunctionMs / jitFunctionMs;
     std::printf("function-call-loop(1e6): interpreter=%.3f ms jit=%.3f ms speedup=%.2fx\n",
                 interpreterFunctionMs, jitFunctionMs, functionSpeedup);
@@ -185,8 +185,8 @@ int main() {
 
     asDWORD interpreterImportedResult = 0;
     asDWORD jitImportedResult = 0;
-    double interpreterImportedMs = Run(interpreter, interpreterImportedCall, &interpreterImportedResult);
-    double jitImportedMs = Run(jitEngine, jitImportedCall, &jitImportedResult);
+    double interpreterImportedMs = Run(interpreterImportedCall, &interpreterImportedResult);
+    double jitImportedMs = Run(jitImportedCall, &jitImportedResult);
     double importedSpeedup = interpreterImportedMs / jitImportedMs;
     std::printf("imported-call-loop(1e6): interpreter=%.3f ms jit=%.3f ms speedup=%.2fx\n",
                 interpreterImportedMs, jitImportedMs, importedSpeedup);
@@ -199,8 +199,8 @@ int main() {
 
     asDWORD interpreterLocalCopyResult = 0;
     asDWORD jitLocalCopyResult = 0;
-    double interpreterLocalCopyMs = Run(interpreter, interpreterLocalCopy, &interpreterLocalCopyResult);
-    double jitLocalCopyMs = Run(jitEngine, jitLocalCopy, &jitLocalCopyResult);
+    double interpreterLocalCopyMs = Run(interpreterLocalCopy, &interpreterLocalCopyResult);
+    double jitLocalCopyMs = Run(jitLocalCopy, &jitLocalCopyResult);
     double localCopySpeedup = interpreterLocalCopyMs / jitLocalCopyMs;
     std::printf("local-copy-loop(1e7): interpreter=%.3f ms jit=%.3f ms speedup=%.2fx\n",
                 interpreterLocalCopyMs, jitLocalCopyMs, localCopySpeedup);
@@ -217,8 +217,8 @@ int main() {
     asDWORD interpreterLocalCopy64Result = 0;
     asDWORD jitLocalCopy64Result = 0;
     double interpreterLocalCopy64Ms =
-        Run(interpreter, interpreterLocalCopy64, &interpreterLocalCopy64Result);
-    double jitLocalCopy64Ms = Run(jitEngine, jitLocalCopy64, &jitLocalCopy64Result);
+        Run(interpreterLocalCopy64, &interpreterLocalCopy64Result);
+    double jitLocalCopy64Ms = Run(jitLocalCopy64, &jitLocalCopy64Result);
     double localCopy64Speedup = interpreterLocalCopy64Ms / jitLocalCopy64Ms;
     std::printf("local-copy64-loop(1e7): interpreter=%.3f ms jit=%.3f ms speedup=%.2fx\n",
                 interpreterLocalCopy64Ms, jitLocalCopy64Ms, localCopy64Speedup);

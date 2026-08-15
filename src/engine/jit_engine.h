@@ -15,12 +15,10 @@ public:
     JitEngine& operator=(const JitEngine&) = delete;
 
     bool Bind();
-    void Unbind();
 
 private:
     asIScriptEngine* m_engine;
     X86JitCompiler*  m_compiler;
-    bool             m_bound;
 };
 
 }

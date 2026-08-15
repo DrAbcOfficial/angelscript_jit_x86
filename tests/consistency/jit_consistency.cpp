@@ -36,10 +36,8 @@ static int s_failures = 0;
 
 namespace {
 
-void MessageCallback(const asSMessageInfo* msg, void* param) {
-    int* errs = static_cast<int*>(param);
+void MessageCallback(const asSMessageInfo* msg, void*) {
     if (msg->type == asMSGTYPE_ERROR) {
-        (*errs)++;
         std::fprintf(stderr, "  [msg] %s (%d,%d): %s\n", msg->section, msg->row, msg->col, msg->message);
     }
 }
@@ -256,9 +254,8 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    int errs = 0;
-    engineInterp->SetMessageCallback(asFUNCTION(MessageCallback), &errs, asCALL_CDECL);
-    engineJit->SetMessageCallback(asFUNCTION(MessageCallback), &errs, asCALL_CDECL);
+    engineInterp->SetMessageCallback(asFUNCTION(MessageCallback), nullptr, asCALL_CDECL);
+    engineJit->SetMessageCallback(asFUNCTION(MessageCallback), nullptr, asCALL_CDECL);
 
     void* jit = AsJitCreateEngine(engineJit);
     if (!jit) {
