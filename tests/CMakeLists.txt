@@ -9,6 +9,7 @@ add_executable(asjitx86_tests
 target_include_directories(asjitx86_tests PRIVATE
     ${CMAKE_SOURCE_DIR}/include
     ${CMAKE_SOURCE_DIR}/third_party/angelscript/sdk/angelscript/include
+    ${CMAKE_SOURCE_DIR}/third_party/angelscript/sdk/angelscript/source
     ${CMAKE_SOURCE_DIR}/third_party/angelscript/sdk/add_on
     ${CMAKE_SOURCE_DIR}/third_party/angelscript/sdk/add_on/scriptarray
     ${CMAKE_SOURCE_DIR}/third_party/angelscript/sdk/add_on/scriptbuilder

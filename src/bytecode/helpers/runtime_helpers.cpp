@@ -219,18 +219,15 @@ void PrepareScriptCall(asCContext* ctx, asCScriptFunction* function) {
     }
 
     ctx->m_regs.stackFramePointer = ctx->m_regs.stackPointer;
-    if (function->scriptData->objVariableInfo.GetLength()) {
-        for (asUINT index = function->scriptData->variables.GetLength();
-             index-- > 0;) {
-            asSScriptVariable* variable =
-                function->scriptData->variables[index];
-            if (variable->stackOffset <= 0) continue;
-            if (variable->onHeap &&
-                (variable->type.IsObject() || variable->type.IsFuncdef())) {
-                *reinterpret_cast<asPWORD*>(
-                    &ctx->m_regs.stackFramePointer[-variable->stackOffset]) =
-                    0;
-            }
+    for (asUINT index = function->scriptData->variables.GetLength();
+         index-- > 0;) {
+        asSScriptVariable* variable =
+            function->scriptData->variables[index];
+        if (variable->stackOffset <= 0) continue;
+        if (variable->onHeap &&
+            (variable->type.IsObject() || variable->type.IsFuncdef())) {
+            *reinterpret_cast<asPWORD*>(
+                &ctx->m_regs.stackFramePointer[-variable->stackOffset]) = 0;
         }
     }
 

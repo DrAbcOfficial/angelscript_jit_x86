@@ -4,6 +4,7 @@
 #include "scriptbuilder.h"
 #include "scriptdictionary.h"
 #include "scriptstdstring.h"
+#include "as_context.h"
 
 #include <cstdio>
 #include <fstream>
@@ -77,6 +78,12 @@ void RaiseError() {
     ctx->SetException("script error", true);
 }
 
+void PoisonStack() {
+    auto* ctx = static_cast<asCContext*>(asGetActiveContext());
+    for (int offset = 1; offset <= 32; offset++)
+        ctx->m_regs.stackPointer[-offset] = 1;
+}
+
 void RegisterAll(asIScriptEngine* engine) {
     RegisterStdString(engine);
     RegisterScriptArray(engine, true);
@@ -96,6 +103,8 @@ void RegisterAll(asIScriptEngine* engine) {
     if (r < 0) std::printf("accumulate failed: %d\n", r);
     r = engine->RegisterGlobalFunction("void RaiseError()", asFUNCTION(RaiseError), asCALL_CDECL);
     if (r < 0) std::printf("RaiseError failed: %d\n", r);
+    r = engine->RegisterGlobalFunction("void PoisonStack()", asFUNCTION(PoisonStack), asCALL_CDECL);
+    if (r < 0) std::printf("PoisonStack failed: %d\n", r);
 }
 
 struct RunResult {
@@ -271,6 +280,7 @@ int main(int argc, char** argv) {
         "globals.as", "statements_extra.as", "types.as", "functions_advanced.as",
         "classes_advanced.as", "operators.as", "handles.as", "lifetime_refs.as",
         "dictionary_handles.as", "shared_mixin.as", "funcptr_fallback.as",
+        "funcdef_local_init.as", "object_member_init.as",
     };
 
     bool jitActive = false;
