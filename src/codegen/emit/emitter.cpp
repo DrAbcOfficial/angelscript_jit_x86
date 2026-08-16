@@ -15,7 +15,14 @@ FunctionEmitter::FunctionEmitter(asmjit::JitRuntime& runtime,
                                  asIScriptFunction* function,
                                  asJITFunction* out)
     : runtime_(runtime), objectPool_(objectPool), function_(function),
-      out_(out) {}
+      out_(out) {
+#if ASJITX86_ENABLE_SSE
+    useSse_ = runtime_.cpu_features().x86().has_sse2();
+#endif
+#if ASJITX86_ENABLE_AVX
+    useAvx_ = useSse_ && runtime_.cpu_features().x86().has_avx();
+#endif
+}
 
 int FunctionEmitter::Run() {
     *out_ = nullptr;
@@ -36,6 +43,10 @@ bool FunctionEmitter::InitializeCompiler() {
     FuncNode* fnNode = cc.add_func(
         FuncSignature::build<void, asSVMRegisters*, asPWORD>());
     if (!fnNode) return false;
+    if (useAvx_) {
+        fnNode->frame().set_avx_enabled();
+        fnNode->frame().set_avx_auto_cleanup();
+    }
 
     regs_ = cc.new_gp32("regs");
     jitArg_ = cc.new_gp32("jitArg");
@@ -71,6 +82,11 @@ bool FunctionEmitter::EmitInstructions() {
         if (i > 0 && fusedCmpBranch_[i - 1]) continue;
         if (refCopyFusionSkip_[i]) continue;
         if (needsLabel_[i]) cc.bind(labels_[i]);
+        const size_t packedCount = EmitPackedFloatImmediate(i);
+        if (packedCount) {
+            i += packedCount - 1;
+            continue;
+        }
         const Instruction& instruction = instructions_[i];
         const asDWORD* ip = bytecode_ + instruction.off;
         if (!EmitInstruction(i, instruction, ip)) return false;
@@ -147,6 +163,64 @@ void FunctionEmitter::StoreVar64(int offset,
     } else {
         cc.movq(x86::qword_ptr(fp_, -offset * 4), source);
     }
+}
+
+void FunctionEmitter::LoadFloatVar(
+    int offset, const asmjit::x86::Vec& destination) {
+    using namespace asmjit;
+    auto& cc = Compiler();
+    if (useSse_ && !cacheLocals_) {
+        const x86::Mem source = x86::dword_ptr(fp_, -offset * 4);
+        cc.movss(destination, source);
+        return;
+    }
+
+    x86::Gp bits = cc.new_gp32("floatBits");
+    LoadVar(offset, bits);
+    if (useAvx_)
+        cc.vmovd(destination, bits);
+    else
+        cc.movd(destination, bits);
+}
+
+void FunctionEmitter::StoreFloatVar(
+    int offset, const asmjit::x86::Vec& source) {
+    using namespace asmjit;
+    auto& cc = Compiler();
+    if (useSse_ && !cacheLocals_) {
+        const x86::Mem destination = x86::dword_ptr(fp_, -offset * 4);
+        cc.movss(destination, source);
+        return;
+    }
+
+    x86::Gp bits = cc.new_gp32("floatBits");
+    if (useAvx_)
+        cc.vmovd(bits, source);
+    else
+        cc.movd(bits, source);
+    StoreVar(offset, bits);
+}
+
+void FunctionEmitter::LoadDoubleVar(
+    int offset, const asmjit::x86::Vec& destination) {
+    using namespace asmjit;
+    if (useSse_ && !cacheLocals_) {
+        const x86::Mem source = x86::qword_ptr(fp_, -offset * 4);
+        Compiler().movsd(destination, source);
+        return;
+    }
+    LoadVar64(offset, destination);
+}
+
+void FunctionEmitter::StoreDoubleVar(
+    int offset, const asmjit::x86::Vec& source) {
+    using namespace asmjit;
+    if (useSse_ && !cacheLocals_) {
+        const x86::Mem destination = x86::qword_ptr(fp_, -offset * 4);
+        Compiler().movsd(destination, source);
+        return;
+    }
+    StoreVar64(offset, source);
 }
 
 void FunctionEmitter::FlushCachedLocals() {

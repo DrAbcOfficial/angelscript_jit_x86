@@ -2,10 +2,118 @@
 
 #include "as_texts.h"
 
+#include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 
 namespace asjitx86::emit {
+
+size_t FunctionEmitter::EmitPackedFloatImmediate(size_t index) {
+    using namespace asmjit;
+
+    if (!useSse_ || cacheLocals_ || index >= instructions_.size()) return 0;
+    const asEBCInstr op = instructions_[index].op;
+    if (op != asBC_ADDIf && op != asBC_SUBIf && op != asBC_MULIf) return 0;
+
+    auto tryWidth = [&](size_t width, size_t stride) -> size_t {
+        const size_t span = (width - 1) * stride + 1;
+        if (index + span > instructions_.size()) return 0;
+        std::array<uint32_t, 8> constants{};
+        int firstOffset = 0;
+        int step = 0;
+        asDWORD immediate = 0;
+        for (size_t lane = 0; lane < width; lane++) {
+            const size_t current = index + lane * stride;
+            if (lane && stride == 2) {
+                const size_t entry = current - 1;
+                if (instructions_[entry].op != asBC_JitEntry ||
+                    !needsLabel_[entry])
+                    return 0;
+            }
+            if (instructions_[current].op != op ||
+                (lane && needsLabel_[current]) ||
+                refCopyFusionSkip_[current] || fusedCmpBranch_[current])
+                return 0;
+            const asDWORD* currentIp =
+                bytecode_ + instructions_[current].off;
+            const int destination = asBC_SWORDARG0(currentIp);
+            const int source = asBC_SWORDARG1(currentIp);
+            if (destination != source) return 0;
+            if (!lane) {
+                firstOffset = destination;
+                immediate = asBC_DWORDARG(currentIp + 1);
+            } else {
+                if (asBC_DWORDARG(currentIp + 1) != immediate) return 0;
+                const int currentStep = destination - firstOffset;
+                if (lane == 1) {
+                    if (currentStep != 1 && currentStep != -1) return 0;
+                    step = currentStep;
+                } else if (currentStep != step * static_cast<int>(lane)) {
+                    return 0;
+                }
+            }
+            constants[lane] = immediate;
+        }
+
+        const int lastOffset = firstOffset +
+            step * static_cast<int>(width - 1);
+        const int highestOffset = std::max(firstOffset, lastOffset);
+        auto& cc = Compiler();
+        const x86::Mem valuesMemory = width == 8
+            ? x86::ymmword_ptr(fp_, -highestOffset * 4)
+            : x86::xmmword_ptr(fp_, -highestOffset * 4);
+        const x86::Mem constantMemory = cc.new_const(
+            ConstPoolScope::kLocal, constants.data(), width * sizeof(uint32_t));
+        x86::Vec values = width == 8
+            ? cc.new_ymm_ps("packedFloatValues")
+            : cc.new_xmm_ps("packedFloatValues");
+
+        if (width == 8) {
+            cc.vmovups(values, valuesMemory);
+            if (op == asBC_ADDIf)
+                cc.vaddps(values, values, constantMemory);
+            else if (op == asBC_SUBIf)
+                cc.vsubps(values, values, constantMemory);
+            else
+                cc.vmulps(values, values, constantMemory);
+            cc.vmovups(valuesMemory, values);
+        } else {
+            cc.movups(values, valuesMemory);
+            if (op == asBC_ADDIf)
+                cc.addps(values, constantMemory);
+            else if (op == asBC_SUBIf)
+                cc.subps(values, constantMemory);
+            else
+                cc.mulps(values, constantMemory);
+            cc.movups(valuesMemory, values);
+        }
+
+        if (stride == 2) {
+            Label packedDone = cc.new_label();
+            cc.jmp(packedDone);
+            for (size_t lane = 1; lane < width; lane++) {
+                const size_t current = index + lane * stride;
+                cc.bind(labels_[current - 1]);
+                const asDWORD* currentIp =
+                    bytecode_ + instructions_[current].off;
+                EmitNumeric(current, instructions_[current], currentIp);
+            }
+            cc.bind(packedDone);
+        }
+        return span;
+    };
+
+    if (useAvx_) {
+        size_t avxWidth = tryWidth(8, 2);
+        if (avxWidth) return avxWidth;
+        avxWidth = tryWidth(8, 1);
+        if (avxWidth) return avxWidth;
+    }
+    size_t sseWidth = tryWidth(4, 2);
+    if (sseWidth) return sseWidth;
+    return tryWidth(4, 1);
+}
 
 EmitResult FunctionEmitter::EmitNumeric(size_t index,
                                         const Instruction& instruction,
@@ -125,23 +233,36 @@ EmitResult FunctionEmitter::EmitNumeric(size_t index,
         const int destination = asBC_SWORDARG0(ip);
         const int left = asBC_SWORDARG1(ip);
         const int right = asBC_SWORDARG2(ip);
-        x86::Gp leftBits = cc.new_gp32("leftBits");
-        x86::Gp rightBits = cc.new_gp32("rightBits");
-        x86::Gp resultBits = cc.new_gp32("resultBits");
         x86::Vec value = cc.new_xmm_ss("value");
-        x86::Vec operand = cc.new_xmm_ss("operand");
-        LoadVar(left, leftBits);
-        LoadVar(right, rightBits);
-        cc.movd(value, leftBits);
-        cc.movd(operand, rightBits);
-        if (instruction.op == asBC_ADDf)
-            cc.addss(value, operand);
-        else if (instruction.op == asBC_SUBf)
-            cc.subss(value, operand);
-        else
-            cc.mulss(value, operand);
-        cc.movd(resultBits, value);
-        StoreVar(destination, resultBits);
+        LoadFloatVar(left, value);
+        if (useSse_ && !cacheLocals_) {
+            const x86::Mem operand = x86::dword_ptr(fp_, -right * 4);
+            if (instruction.op == asBC_ADDf) {
+                cc.addss(value, operand);
+            } else if (instruction.op == asBC_SUBf) {
+                cc.subss(value, operand);
+            } else {
+                cc.mulss(value, operand);
+            }
+        } else {
+            x86::Vec operand = cc.new_xmm_ss("operand");
+            LoadFloatVar(right, operand);
+            if (useAvx_) {
+                if (instruction.op == asBC_ADDf)
+                    cc.vaddss(value, value, operand);
+                else if (instruction.op == asBC_SUBf)
+                    cc.vsubss(value, value, operand);
+                else
+                    cc.vmulss(value, value, operand);
+            } else if (instruction.op == asBC_ADDf) {
+                cc.addss(value, operand);
+            } else if (instruction.op == asBC_SUBf) {
+                cc.subss(value, operand);
+            } else {
+                cc.mulss(value, operand);
+            }
+        }
+        StoreFloatVar(destination, value);
         return EmitResult::Success;
     }
     case asBC_ADDd:
@@ -151,16 +272,35 @@ EmitResult FunctionEmitter::EmitNumeric(size_t index,
         const int left = asBC_SWORDARG1(ip);
         const int right = asBC_SWORDARG2(ip);
         x86::Vec value = cc.new_xmm_sd("value");
-        x86::Vec operand = cc.new_xmm_sd("operand");
-        LoadVar64(left, value);
-        LoadVar64(right, operand);
-        if (instruction.op == asBC_ADDd)
-            cc.addsd(value, operand);
-        else if (instruction.op == asBC_SUBd)
-            cc.subsd(value, operand);
-        else
-            cc.mulsd(value, operand);
-        StoreVar64(destination, value);
+        LoadDoubleVar(left, value);
+        if (useSse_ && !cacheLocals_) {
+            const x86::Mem operand = x86::qword_ptr(fp_, -right * 4);
+            if (instruction.op == asBC_ADDd) {
+                cc.addsd(value, operand);
+            } else if (instruction.op == asBC_SUBd) {
+                cc.subsd(value, operand);
+            } else {
+                cc.mulsd(value, operand);
+            }
+        } else {
+            x86::Vec operand = cc.new_xmm_sd("operand");
+            LoadDoubleVar(right, operand);
+            if (useAvx_) {
+                if (instruction.op == asBC_ADDd)
+                    cc.vaddsd(value, value, operand);
+                else if (instruction.op == asBC_SUBd)
+                    cc.vsubsd(value, value, operand);
+                else
+                    cc.vmulsd(value, value, operand);
+            } else if (instruction.op == asBC_ADDd) {
+                cc.addsd(value, operand);
+            } else if (instruction.op == asBC_SUBd) {
+                cc.subsd(value, operand);
+            } else {
+                cc.mulsd(value, operand);
+            }
+        }
+        StoreDoubleVar(destination, value);
         return EmitResult::Success;
     }
     case asBC_DIVf: {
@@ -174,18 +314,20 @@ EmitResult FunctionEmitter::EmitNumeric(size_t index,
         cc.and_(divisorBits, 0x7FFFFFFF);
         cc.jz(fallback);
         {
-            x86::Gp leftBits = cc.new_gp32("leftBits");
-            x86::Gp rightBits = cc.new_gp32("rightBits");
-            x86::Gp resultBits = cc.new_gp32("resultBits");
             x86::Vec value = cc.new_xmm_ss("value");
-            x86::Vec operand = cc.new_xmm_ss("operand");
-            LoadVar(left, leftBits);
-            LoadVar(right, rightBits);
-            cc.movd(value, leftBits);
-            cc.movd(operand, rightBits);
-            cc.divss(value, operand);
-            cc.movd(resultBits, value);
-            StoreVar(destination, resultBits);
+            LoadFloatVar(left, value);
+            if (useSse_ && !cacheLocals_) {
+                const x86::Mem operand = x86::dword_ptr(fp_, -right * 4);
+                cc.divss(value, operand);
+            } else {
+                x86::Vec operand = cc.new_xmm_ss("operand");
+                LoadFloatVar(right, operand);
+                if (useAvx_)
+                    cc.vdivss(value, value, operand);
+                else
+                    cc.divss(value, operand);
+            }
+            StoreFloatVar(destination, value);
         }
         cc.jmp(done);
         cc.bind(fallback);
@@ -208,11 +350,19 @@ EmitResult FunctionEmitter::EmitNumeric(size_t index,
         cc.jz(fallback);
         {
             x86::Vec value = cc.new_xmm_sd("value");
-            x86::Vec operand = cc.new_xmm_sd("operand");
-            LoadVar64(left, value);
-            LoadVar64(right, operand);
-            cc.divsd(value, operand);
-            StoreVar64(destination, value);
+            LoadDoubleVar(left, value);
+            if (useSse_ && !cacheLocals_) {
+                const x86::Mem operand = x86::qword_ptr(fp_, -right * 4);
+                cc.divsd(value, operand);
+            } else {
+                x86::Vec operand = cc.new_xmm_sd("operand");
+                LoadDoubleVar(right, operand);
+                if (useAvx_)
+                    cc.vdivsd(value, value, operand);
+                else
+                    cc.divsd(value, operand);
+            }
+            StoreDoubleVar(destination, value);
         }
         cc.jmp(done);
         cc.bind(fallback);
@@ -225,24 +375,39 @@ EmitResult FunctionEmitter::EmitNumeric(size_t index,
     case asBC_MULIf: {
         const int destination = asBC_SWORDARG0(ip);
         const int source = asBC_SWORDARG1(ip);
-        x86::Gp immediate = cc.new_gp32("immediate");
-        x86::Gp sourceBits = cc.new_gp32("sourceBits");
-        x86::Gp resultBits = cc.new_gp32("resultBits");
         x86::Vec value = cc.new_xmm_ss("value");
-        x86::Vec operand = cc.new_xmm_ss("operand");
-        LoadVar(source, sourceBits);
-        cc.movd(value, sourceBits);
-        cc.mov(immediate,
-               Imm(int64_t((int32_t)asBC_DWORDARG(ip + 1))));
-        cc.movd(operand, immediate);
-        if (instruction.op == asBC_ADDIf)
-            cc.addss(value, operand);
-        else if (instruction.op == asBC_SUBIf)
-            cc.subss(value, operand);
-        else
-            cc.mulss(value, operand);
-        cc.movd(resultBits, value);
-        StoreVar(destination, resultBits);
+        LoadFloatVar(source, value);
+        if (useSse_) {
+            const x86::Mem operand = cc.new_uint32_const(
+                ConstPoolScope::kLocal, asBC_DWORDARG(ip + 1));
+            if (useAvx_) {
+                if (instruction.op == asBC_ADDIf)
+                    cc.vaddss(value, value, operand);
+                else if (instruction.op == asBC_SUBIf)
+                    cc.vsubss(value, value, operand);
+                else
+                    cc.vmulss(value, value, operand);
+            } else if (instruction.op == asBC_ADDIf) {
+                cc.addss(value, operand);
+            } else if (instruction.op == asBC_SUBIf) {
+                cc.subss(value, operand);
+            } else {
+                cc.mulss(value, operand);
+            }
+        } else {
+            x86::Gp immediate = cc.new_gp32("immediate");
+            x86::Vec operand = cc.new_xmm_ss("operand");
+            cc.mov(immediate,
+                   Imm(int64_t((int32_t)asBC_DWORDARG(ip + 1))));
+            cc.movd(operand, immediate);
+            if (instruction.op == asBC_ADDIf)
+                cc.addss(value, operand);
+            else if (instruction.op == asBC_SUBIf)
+                cc.subss(value, operand);
+            else
+                cc.mulss(value, operand);
+        }
+        StoreFloatVar(destination, value);
         return EmitResult::Success;
     }
     case asBC_NEGf: {
@@ -271,24 +436,29 @@ EmitResult FunctionEmitter::EmitNumeric(size_t index,
                              ? cc.new_xmm_sd("right")
                              : cc.new_xmm_ss("right");
         if (instruction.op == asBC_CMPd) {
-            LoadVar64(asBC_SWORDARG0(ip), left);
-            LoadVar64(asBC_SWORDARG1(ip), right);
-            cc.ucomisd(left, right);
+            LoadDoubleVar(asBC_SWORDARG0(ip), left);
+            LoadDoubleVar(asBC_SWORDARG1(ip), right);
+            if (useAvx_)
+                cc.vucomisd(left, right);
+            else
+                cc.ucomisd(left, right);
         } else {
-            x86::Gp leftBits = cc.new_gp32("leftBits");
-            LoadVar(asBC_SWORDARG0(ip), leftBits);
-            cc.movd(left, leftBits);
+            LoadFloatVar(asBC_SWORDARG0(ip), left);
             if (instruction.op == asBC_CMPf) {
-                x86::Gp rightBits = cc.new_gp32("rightBits");
-                LoadVar(asBC_SWORDARG1(ip), rightBits);
-                cc.movd(right, rightBits);
+                LoadFloatVar(asBC_SWORDARG1(ip), right);
             } else {
                 x86::Gp immediate = cc.new_gp32("immediate");
                 cc.mov(immediate,
                        Imm(int64_t((int32_t)asBC_DWORDARG(ip))));
-                cc.movd(right, immediate);
+                if (useAvx_)
+                    cc.vmovd(right, immediate);
+                else
+                    cc.movd(right, immediate);
             }
-            cc.ucomiss(left, right);
+            if (useAvx_)
+                cc.vucomiss(left, right);
+            else
+                cc.ucomiss(left, right);
         }
 
         x86::Gp result = cc.new_gp32("result");

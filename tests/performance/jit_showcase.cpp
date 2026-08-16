@@ -738,6 +738,57 @@ int main()
 }
 )AS";
 
+const char* kSimdFloat = R"AS(
+int main()
+{
+    float padding = -1.0f;
+    float a0 = 0.0f;
+    float a1 = 1.0f;
+    float a2 = 2.0f;
+    float a3 = 3.0f;
+    float a4 = 4.0f;
+    float a5 = 5.0f;
+    float a6 = 6.0f;
+    float a7 = 7.0f;
+    for (int i = 0; i < 2000000; i++)
+    {
+        a0 += 0.25f;
+        a1 += 0.25f;
+        a2 += 0.25f;
+        a3 += 0.25f;
+        a4 += 0.25f;
+        a5 += 0.25f;
+        a6 += 0.25f;
+        a7 += 0.25f;
+        a0 += 0.25f;
+        a1 += 0.25f;
+        a2 += 0.25f;
+        a3 += 0.25f;
+        a4 += 0.25f;
+        a5 += 0.25f;
+        a6 += 0.25f;
+        a7 += 0.25f;
+        a0 += 0.25f;
+        a1 += 0.25f;
+        a2 += 0.25f;
+        a3 += 0.25f;
+        a4 += 0.25f;
+        a5 += 0.25f;
+        a6 += 0.25f;
+        a7 += 0.25f;
+        a0 += 0.25f;
+        a1 += 0.25f;
+        a2 += 0.25f;
+        a3 += 0.25f;
+        a4 += 0.25f;
+        a5 += 0.25f;
+        a6 += 0.25f;
+        a7 += 0.25f;
+    }
+    return int(padding + a0 + a1 + a2 + a3 + a4 + a5 + a6 + a7);
+}
+)AS";
+
 const char* kDataNumeric = R"AS(
 uint nextNumericState(uint value)
 {
@@ -1146,6 +1197,7 @@ const CaseDef kCases[] = {
     {"arith-uint32", kArithUint32, nullptr, nullptr, false},
     {"arith-int64", kArithInt64, nullptr, nullptr, false},
     {"arith-float", kArithFloat, nullptr, nullptr, false},
+    {"simd-float", kSimdFloat, nullptr, nullptr, false},
     {"arith-double", kArithDouble, nullptr, nullptr, false},
     {"branch-switch", kBranchSwitch, nullptr, nullptr, false},
     {"calls-basic", kCallsBasic, nullptr, nullptr, false},

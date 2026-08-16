@@ -67,11 +67,16 @@ private:
                           const asDWORD* ip);
     EmitResult EmitNumeric(size_t index, const Instruction& instruction,
                            const asDWORD* ip);
+    size_t EmitPackedFloatImmediate(size_t index);
 
     void LoadVar(int offset, const asmjit::x86::Gp& destination);
     void StoreVar(int offset, const asmjit::x86::Gp& source);
     void LoadVar64(int offset, const asmjit::x86::Vec& destination);
     void StoreVar64(int offset, const asmjit::x86::Vec& source);
+    void LoadFloatVar(int offset, const asmjit::x86::Vec& destination);
+    void StoreFloatVar(int offset, const asmjit::x86::Vec& source);
+    void LoadDoubleVar(int offset, const asmjit::x86::Vec& destination);
+    void StoreDoubleVar(int offset, const asmjit::x86::Vec& source);
     void FlushCachedLocals();
     void ReloadCachedLocals();
     void LoadSp(const asmjit::x86::Gp& destination);
@@ -95,6 +100,8 @@ private:
     asUINT bytecodeLength_ = 0;
     bool inlineFieldMemory_ = false;
     bool cacheLocals_ = false;
+    bool useSse_ = false;
+    bool useAvx_ = false;
 
     std::vector<Instruction> instructions_;
     std::vector<int> indexOfOffset_;

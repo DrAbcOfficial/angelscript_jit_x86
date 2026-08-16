@@ -7,6 +7,12 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(ASJITX86_BUILD_SHARED "Build as_jit_x86 as a shared library" ON)
 option(ASJITX86_BUILD_TESTS  "Build tests" ON)
+option(ASJITX86_ENABLE_SSE   "Enable SSE2-optimized JIT code generation" ON)
+option(ASJITX86_ENABLE_AVX   "Enable AVX-optimized JIT code generation" OFF)
+
+if(ASJITX86_ENABLE_AVX AND NOT ASJITX86_ENABLE_SSE)
+    message(FATAL_ERROR "ASJITX86_ENABLE_AVX requires ASJITX86_ENABLE_SSE")
+endif()
 
 if(NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
     message(FATAL_ERROR
@@ -79,7 +85,11 @@ target_include_directories(as_jit_x86
     PRIVATE third_party/angelscript/sdk/angelscript/source
 )
 
-target_compile_definitions(as_jit_x86 PRIVATE ASMJIT_STATIC)
+target_compile_definitions(as_jit_x86 PRIVATE
+    ASMJIT_STATIC
+    ASJITX86_ENABLE_SSE=$<BOOL:${ASJITX86_ENABLE_SSE}>
+    ASJITX86_ENABLE_AVX=$<BOOL:${ASJITX86_ENABLE_AVX}>
+)
 
 target_link_libraries(as_jit_x86 PRIVATE angelscript asmjit::asmjit)
 

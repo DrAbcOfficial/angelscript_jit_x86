@@ -796,15 +796,27 @@ EmitResult FunctionEmitter::EmitCalls(size_t index,
                 x86::Vec operand = cc.new_xmm_ss("inlineFloatOperand");
                 loadValue(asBC_SWORDARG1(bodyIp), leftBits);
                 loadValue(asBC_SWORDARG2(bodyIp), rightBits);
-                cc.movd(value, leftBits);
-                cc.movd(operand, rightBits);
-                if (op == asBC_ADDf)
-                    cc.addss(value, operand);
-                else if (op == asBC_SUBf)
-                    cc.subss(value, operand);
-                else
-                    cc.mulss(value, operand);
-                cc.movd(resultBits, value);
+                if (useAvx_) {
+                    cc.vmovd(value, leftBits);
+                    cc.vmovd(operand, rightBits);
+                    if (op == asBC_ADDf)
+                        cc.vaddss(value, value, operand);
+                    else if (op == asBC_SUBf)
+                        cc.vsubss(value, value, operand);
+                    else
+                        cc.vmulss(value, value, operand);
+                    cc.vmovd(resultBits, value);
+                } else {
+                    cc.movd(value, leftBits);
+                    cc.movd(operand, rightBits);
+                    if (op == asBC_ADDf)
+                        cc.addss(value, operand);
+                    else if (op == asBC_SUBf)
+                        cc.subss(value, operand);
+                    else
+                        cc.mulss(value, operand);
+                    cc.movd(resultBits, value);
+                }
                 storeValue(asBC_SWORDARG0(bodyIp), resultBits);
                 break;
             }
@@ -815,12 +827,20 @@ EmitResult FunctionEmitter::EmitCalls(size_t index,
                 x86::Vec operand = cc.new_xmm_sd("inlineDoubleOperand");
                 loadValue64(asBC_SWORDARG1(bodyIp), value);
                 loadValue64(asBC_SWORDARG2(bodyIp), operand);
-                if (op == asBC_ADDd)
+                if (useAvx_) {
+                    if (op == asBC_ADDd)
+                        cc.vaddsd(value, value, operand);
+                    else if (op == asBC_SUBd)
+                        cc.vsubsd(value, value, operand);
+                    else
+                        cc.vmulsd(value, value, operand);
+                } else if (op == asBC_ADDd) {
                     cc.addsd(value, operand);
-                else if (op == asBC_SUBd)
+                } else if (op == asBC_SUBd) {
                     cc.subsd(value, operand);
-                else
+                } else {
                     cc.mulsd(value, operand);
+                }
                 storeValue64(asBC_SWORDARG0(bodyIp), value);
                 break;
             }
@@ -848,18 +868,34 @@ EmitResult FunctionEmitter::EmitCalls(size_t index,
                 x86::Vec value = cc.new_xmm_ss("inlineFloatValue");
                 x86::Vec operand = cc.new_xmm_ss("inlineFloatOperand");
                 loadValue(asBC_SWORDARG1(bodyIp), valueBits);
-                cc.movd(value, valueBits);
+                if (useAvx_)
+                    cc.vmovd(value, valueBits);
+                else
+                    cc.movd(value, valueBits);
                 cc.mov(immediate,
                        Imm(int64_t(static_cast<int32_t>(
                            asBC_DWORDARG(bodyIp + 1)))));
-                cc.movd(operand, immediate);
-                if (op == asBC_ADDIf)
-                    cc.addss(value, operand);
-                else if (op == asBC_SUBIf)
-                    cc.subss(value, operand);
+                if (useAvx_)
+                    cc.vmovd(operand, immediate);
                 else
-                    cc.mulss(value, operand);
-                cc.movd(resultBits, value);
+                    cc.movd(operand, immediate);
+                if (useAvx_) {
+                    if (op == asBC_ADDIf)
+                        cc.vaddss(value, value, operand);
+                    else if (op == asBC_SUBIf)
+                        cc.vsubss(value, value, operand);
+                    else
+                        cc.vmulss(value, value, operand);
+                    cc.vmovd(resultBits, value);
+                } else {
+                    if (op == asBC_ADDIf)
+                        cc.addss(value, operand);
+                    else if (op == asBC_SUBIf)
+                        cc.subss(value, operand);
+                    else
+                        cc.mulss(value, operand);
+                    cc.movd(resultBits, value);
+                }
                 storeValue(asBC_SWORDARG0(bodyIp), resultBits);
                 break;
             }

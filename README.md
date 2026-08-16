@@ -25,6 +25,11 @@ ctest --test-dir build-win32 -C Release --output-on-failure
 
 For a static library, use `-DASJITX86_BUILD_SHARED=OFF`.
 
+SSE2-optimized JIT code generation is enabled by default. Disable it with
+`-DASJITX86_ENABLE_SSE=OFF`. AVX code generation is disabled by default; enable
+it with `-DASJITX86_ENABLE_AVX=ON`. AVX builds detect host support through
+AsmJit at runtime and fall back to the SSE2 path when AVX is unavailable.
+
 ### Linux
 
 Install a multilib-capable compiler, then configure the 32-bit build:
