@@ -21,6 +21,7 @@ extern "C" {
 
 ASJITX86_API void* AsJitCreateEngine(asIScriptEngine* engine);
 ASJITX86_API void  AsJitDestroyEngine(void* jitEngine);
+ASJITX86_API const char* AsJitGetCompatibilityError(void);
 
 #ifdef __cplusplus
 }

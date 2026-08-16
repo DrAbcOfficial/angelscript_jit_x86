@@ -8,16 +8,22 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(ASJITX86_BUILD_SHARED "Build as_jit_x86 as a shared library" ON)
 option(ASJITX86_BUILD_TESTS  "Build tests" ON)
 option(ASJITX86_ENABLE_SSE   "Enable SSE2-optimized JIT code generation" ON)
-option(ASJITX86_ENABLE_AVX   "Enable AVX-optimized JIT code generation" OFF)
+option(ASJITX86_ENABLE_AVX2  "Enable AVX-optimized JIT code generation and require AVX2" OFF)
 
-if(ASJITX86_ENABLE_AVX AND NOT ASJITX86_ENABLE_SSE)
-    message(FATAL_ERROR "ASJITX86_ENABLE_AVX requires ASJITX86_ENABLE_SSE")
+if(ASJITX86_ENABLE_AVX2 AND NOT ASJITX86_ENABLE_SSE)
+    message(FATAL_ERROR "ASJITX86_ENABLE_AVX2 requires ASJITX86_ENABLE_SSE")
 endif()
 
 if(NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
     message(FATAL_ERROR
         "as_jit_x86 targets x86 (32-bit) only. "
         "Windows: configure with -A Win32. Linux: use -DCMAKE_CXX_FLAGS=-m32 -DCMAKE_C_FLAGS=-m32")
+endif()
+
+if(MSVC)
+    add_compile_options(/arch:IA32)
+elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    add_compile_options(-mno-sse -mno-sse2 -mno-avx -mno-avx2)
 endif()
 
 if(UNIX)
@@ -88,7 +94,7 @@ target_include_directories(as_jit_x86
 target_compile_definitions(as_jit_x86 PRIVATE
     ASMJIT_STATIC
     ASJITX86_ENABLE_SSE=$<BOOL:${ASJITX86_ENABLE_SSE}>
-    ASJITX86_ENABLE_AVX=$<BOOL:${ASJITX86_ENABLE_AVX}>
+    ASJITX86_ENABLE_AVX2=$<BOOL:${ASJITX86_ENABLE_AVX2}>
 )
 
 target_link_libraries(as_jit_x86 PRIVATE angelscript asmjit::asmjit)

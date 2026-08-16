@@ -19,8 +19,8 @@ FunctionEmitter::FunctionEmitter(asmjit::JitRuntime& runtime,
 #if ASJITX86_ENABLE_SSE
     useSse_ = runtime_.cpu_features().x86().has_sse2();
 #endif
-#if ASJITX86_ENABLE_AVX
-    useAvx_ = useSse_ && runtime_.cpu_features().x86().has_avx();
+#if ASJITX86_ENABLE_AVX2
+    useAvx_ = useSse_ && runtime_.cpu_features().x86().has_avx2();
 #endif
 }
 

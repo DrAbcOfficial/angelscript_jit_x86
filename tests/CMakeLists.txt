@@ -19,6 +19,18 @@ target_include_directories(asjitx86_tests PRIVATE
 
 target_link_libraries(asjitx86_tests PRIVATE as_jit_x86 angelscript)
 
+add_executable(asjitx86_cpu_requirements
+    cpu_requirements/cpu_requirements.cpp
+)
+target_include_directories(asjitx86_cpu_requirements PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+)
+target_compile_definitions(asjitx86_cpu_requirements PRIVATE
+    ASJITX86_ENABLE_SSE=$<BOOL:${ASJITX86_ENABLE_SSE}>
+    ASJITX86_ENABLE_AVX2=$<BOOL:${ASJITX86_ENABLE_AVX2}>
+)
+target_link_libraries(asjitx86_cpu_requirements PRIVATE asmjit::asmjit)
+
 if(UNIX)
     target_link_libraries(asjitx86_tests PRIVATE pthread dl)
 endif()
@@ -75,3 +87,4 @@ endif()
 
 add_test(NAME jit_consistency COMMAND asjitx86_tests
          WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME cpu_requirements COMMAND asjitx86_cpu_requirements)

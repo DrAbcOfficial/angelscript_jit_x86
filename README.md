@@ -25,10 +25,15 @@ ctest --test-dir build-win32 -C Release --output-on-failure
 
 For a static library, use `-DASJITX86_BUILD_SHARED=OFF`.
 
-SSE2-optimized JIT code generation is enabled by default. Disable it with
-`-DASJITX86_ENABLE_SSE=OFF`. AVX code generation is disabled by default; enable
-it with `-DASJITX86_ENABLE_AVX=ON`. AVX builds detect host support through
-AsmJit at runtime and fall back to the SSE2 path when AVX is unavailable.
+SSE2-optimized JIT code generation is enabled by default. Disable the packed
+SSE2 optimization with `-DASJITX86_ENABLE_SSE=OFF`; all builds still require
+SSE2 for baseline floating-point code generation. AVX code generation is
+disabled by default; enable the SSE2+AVX2 variant with
+`-DASJITX86_ENABLE_AVX2=ON`.
+
+Every build checks its required instruction set through AsmJit before creating
+the JIT engine. The default build requires SSE2. The SSE2+AVX2 build additionally
+requires CPU and operating system AVX2 support and does not fall back to SSE2.
 
 ### Linux
 
@@ -75,7 +80,10 @@ AsJitDestroyEngine(jit);
 engine->Release();
 ```
 
-The public C ABI consists of `AsJitCreateEngine` and `AsJitDestroyEngine`. A failed creation returns `nullptr`.
+Call `AsJitGetCompatibilityError` before initialization when the host needs a
+diagnostic for an unsupported CPU. It returns `nullptr` when the current CPU and
+operating system satisfy the build requirements. `AsJitCreateEngine` performs
+the same check and returns `nullptr` on incompatibility.
 
 ## License
 
