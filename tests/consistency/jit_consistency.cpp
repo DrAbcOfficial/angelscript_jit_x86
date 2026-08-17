@@ -280,7 +280,7 @@ int main(int argc, char** argv) {
         "globals.as", "statements_extra.as", "types.as", "functions_advanced.as",
         "classes_advanced.as", "operators.as", "handles.as", "lifetime_refs.as",
         "dictionary_handles.as", "shared_mixin.as", "funcptr_fallback.as",
-        "funcdef_local_init.as", "object_member_init.as",
+        "funcdef_local_init.as", "object_member_init.as", "simd_float.as",
     };
 
     bool jitActive = false;

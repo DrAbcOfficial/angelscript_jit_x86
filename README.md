@@ -31,6 +31,11 @@ SSE2 for baseline floating-point code generation. AVX code generation is
 disabled by default; enable the SSE2+AVX2 variant with
 `-DASJITX86_ENABLE_AVX2=ON`.
 
+The SSE2 path combines eligible contiguous float arithmetic into four-lane
+operations and uses SIMD transfers for 64-bit VM values. The AVX2 path extends
+eligible float groups to eight lanes and uses VEX-encoded scalar, packed, and
+64-bit transfer instructions throughout generated code.
+
 Every build checks its required instruction set through AsmJit before creating
 the JIT engine. The default build requires SSE2. The SSE2+AVX2 build additionally
 requires CPU and operating system AVX2 support and does not fall back to SSE2.

@@ -9,6 +9,116 @@
 
 namespace asjitx86::emit {
 
+size_t FunctionEmitter::EmitPackedFloatBinary(size_t index) {
+    using namespace asmjit;
+
+    if (!useSse_ || cacheLocals_ || index >= instructions_.size()) return 0;
+    const asEBCInstr op = instructions_[index].op;
+    if (op != asBC_ADDf && op != asBC_SUBf && op != asBC_MULf) return 0;
+
+    auto tryWidth = [&](size_t width, size_t stride) -> size_t {
+        const size_t span = (width - 1) * stride + 1;
+        if (index + span > instructions_.size()) return 0;
+
+        int firstOffset = 0;
+        int firstRight = 0;
+        for (size_t lane = 0; lane < width; lane++) {
+            const size_t current = index + lane * stride;
+            if (lane && stride == 2) {
+                const size_t entry = current - 1;
+                if (instructions_[entry].op != asBC_JitEntry ||
+                    !needsLabel_[entry])
+                    return 0;
+            }
+            if (instructions_[current].op != op ||
+                (lane && needsLabel_[current]) ||
+                refCopyFusionSkip_[current] || fusedCmpBranch_[current])
+                return 0;
+
+            const asDWORD* currentIp =
+                bytecode_ + instructions_[current].off;
+            const int destination = asBC_SWORDARG0(currentIp);
+            const int left = asBC_SWORDARG1(currentIp);
+            const int right = asBC_SWORDARG2(currentIp);
+            if (destination != left) return 0;
+            if (!lane) {
+                firstOffset = destination;
+                firstRight = right;
+            } else if (destination != firstOffset - static_cast<int>(lane) ||
+                       right != firstRight - static_cast<int>(lane)) {
+                return 0;
+            }
+        }
+
+        const int lastOffset = firstOffset - static_cast<int>(width - 1);
+        const int lastRight = firstRight - static_cast<int>(width - 1);
+        const bool rangesOverlap =
+            !(firstOffset < lastRight || firstRight < lastOffset);
+        if (rangesOverlap && firstOffset != firstRight) return 0;
+
+        auto& cc = Compiler();
+        const bool wide = width == 8;
+        const x86::Mem leftMemory = wide
+            ? x86::ymmword_ptr(fp_, -firstOffset * 4)
+            : x86::xmmword_ptr(fp_, -firstOffset * 4);
+        const x86::Mem rightMemory = wide
+            ? x86::ymmword_ptr(fp_, -firstRight * 4)
+            : x86::xmmword_ptr(fp_, -firstRight * 4);
+        x86::Vec values = wide
+            ? cc.new_ymm_ps("packedFloatValues")
+            : cc.new_xmm_ps("packedFloatValues");
+        x86::Vec operands = wide
+            ? cc.new_ymm_ps("packedFloatOperands")
+            : cc.new_xmm_ps("packedFloatOperands");
+
+        if (wide) {
+            cc.vmovups(values, leftMemory);
+            cc.vmovups(operands, rightMemory);
+            if (op == asBC_ADDf)
+                cc.vaddps(values, values, operands);
+            else if (op == asBC_SUBf)
+                cc.vsubps(values, values, operands);
+            else
+                cc.vmulps(values, values, operands);
+            cc.vmovups(leftMemory, values);
+        } else {
+            cc.movups(values, leftMemory);
+            cc.movups(operands, rightMemory);
+            if (op == asBC_ADDf)
+                cc.addps(values, operands);
+            else if (op == asBC_SUBf)
+                cc.subps(values, operands);
+            else
+                cc.mulps(values, operands);
+            cc.movups(leftMemory, values);
+        }
+
+        if (stride == 2) {
+            Label packedDone = cc.new_label();
+            cc.jmp(packedDone);
+            for (size_t lane = 1; lane < width; lane++) {
+                const size_t current = index + lane * stride;
+                cc.bind(labels_[current - 1]);
+                const asDWORD* currentIp =
+                    bytecode_ + instructions_[current].off;
+                EmitNumeric(current, instructions_[current], currentIp);
+            }
+            cc.bind(packedDone);
+        }
+        return span;
+    };
+
+    if (useAvx_) {
+        size_t avxWidth = tryWidth(8, 2);
+        if (avxWidth) return avxWidth;
+        avxWidth = tryWidth(8, 1);
+        if (avxWidth) return avxWidth;
+    }
+    size_t sseWidth = tryWidth(4, 2);
+    if (sseWidth) return sseWidth;
+    return tryWidth(4, 1);
+}
+
 size_t FunctionEmitter::EmitPackedFloatImmediate(size_t index) {
     using namespace asmjit;
 
@@ -237,7 +347,13 @@ EmitResult FunctionEmitter::EmitNumeric(size_t index,
         LoadFloatVar(left, value);
         if (useSse_ && !cacheLocals_) {
             const x86::Mem operand = x86::dword_ptr(fp_, -right * 4);
-            if (instruction.op == asBC_ADDf) {
+            if (useAvx_ && instruction.op == asBC_ADDf) {
+                cc.vaddss(value, value, operand);
+            } else if (useAvx_ && instruction.op == asBC_SUBf) {
+                cc.vsubss(value, value, operand);
+            } else if (useAvx_ && instruction.op == asBC_MULf) {
+                cc.vmulss(value, value, operand);
+            } else if (instruction.op == asBC_ADDf) {
                 cc.addss(value, operand);
             } else if (instruction.op == asBC_SUBf) {
                 cc.subss(value, operand);
@@ -275,7 +391,13 @@ EmitResult FunctionEmitter::EmitNumeric(size_t index,
         LoadDoubleVar(left, value);
         if (useSse_ && !cacheLocals_) {
             const x86::Mem operand = x86::qword_ptr(fp_, -right * 4);
-            if (instruction.op == asBC_ADDd) {
+            if (useAvx_ && instruction.op == asBC_ADDd) {
+                cc.vaddsd(value, value, operand);
+            } else if (useAvx_ && instruction.op == asBC_SUBd) {
+                cc.vsubsd(value, value, operand);
+            } else if (useAvx_ && instruction.op == asBC_MULd) {
+                cc.vmulsd(value, value, operand);
+            } else if (instruction.op == asBC_ADDd) {
                 cc.addsd(value, operand);
             } else if (instruction.op == asBC_SUBd) {
                 cc.subsd(value, operand);
@@ -318,7 +440,10 @@ EmitResult FunctionEmitter::EmitNumeric(size_t index,
             LoadFloatVar(left, value);
             if (useSse_ && !cacheLocals_) {
                 const x86::Mem operand = x86::dword_ptr(fp_, -right * 4);
-                cc.divss(value, operand);
+                if (useAvx_)
+                    cc.vdivss(value, value, operand);
+                else
+                    cc.divss(value, operand);
             } else {
                 x86::Vec operand = cc.new_xmm_ss("operand");
                 LoadFloatVar(right, operand);
@@ -353,7 +478,10 @@ EmitResult FunctionEmitter::EmitNumeric(size_t index,
             LoadDoubleVar(left, value);
             if (useSse_ && !cacheLocals_) {
                 const x86::Mem operand = x86::qword_ptr(fp_, -right * 4);
-                cc.divsd(value, operand);
+                if (useAvx_)
+                    cc.vdivsd(value, value, operand);
+                else
+                    cc.divsd(value, operand);
             } else {
                 x86::Vec operand = cc.new_xmm_sd("operand");
                 LoadDoubleVar(right, operand);

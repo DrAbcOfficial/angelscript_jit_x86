@@ -569,24 +569,45 @@ EmitResult FunctionEmitter::EmitCalls(size_t index,
         auto loadValue64 = [&](int offset, const x86::Vec& destination) {
             if (offset > 1 && size_t(offset) < locals.size()) {
                 x86::Vec high = cc.new_xmm("inlineHigh64");
-                cc.movd(destination, locals[static_cast<size_t>(offset)]);
-                cc.movd(high, locals[static_cast<size_t>(offset - 1)]);
-                cc.psllq(high, 32);
-                cc.por(destination, high);
+                if (useAvx_) {
+                    cc.vmovd(destination, locals[static_cast<size_t>(offset)]);
+                    cc.vmovd(high, locals[static_cast<size_t>(offset - 1)]);
+                    cc.vpsllq(high, high, 32);
+                    cc.vpor(destination, destination, high);
+                } else {
+                    cc.movd(destination, locals[static_cast<size_t>(offset)]);
+                    cc.movd(high, locals[static_cast<size_t>(offset - 1)]);
+                    cc.psllq(high, 32);
+                    cc.por(destination, high);
+                }
             } else {
-                cc.movq(destination,
-                        x86::qword_ptr(callFrame, -offset * 4));
+                if (useAvx_)
+                    cc.vmovq(destination,
+                            x86::qword_ptr(callFrame, -offset * 4));
+                else
+                    cc.movq(destination,
+                            x86::qword_ptr(callFrame, -offset * 4));
             }
         };
         auto storeValue64 = [&](int offset, const x86::Vec& source) {
             if (offset > 1 && size_t(offset) < locals.size()) {
                 x86::Vec high = cc.new_xmm("inlineHigh64");
-                cc.movd(locals[static_cast<size_t>(offset)], source);
-                cc.movq(high, source);
-                cc.psrlq(high, 32);
-                cc.movd(locals[static_cast<size_t>(offset - 1)], high);
+                if (useAvx_) {
+                    cc.vmovd(locals[static_cast<size_t>(offset)], source);
+                    cc.vmovq(high, source);
+                    cc.vpsrlq(high, high, 32);
+                    cc.vmovd(locals[static_cast<size_t>(offset - 1)], high);
+                } else {
+                    cc.movd(locals[static_cast<size_t>(offset)], source);
+                    cc.movq(high, source);
+                    cc.psrlq(high, 32);
+                    cc.movd(locals[static_cast<size_t>(offset - 1)], high);
+                }
             } else {
-                cc.movq(x86::qword_ptr(callFrame, -offset * 4), source);
+                if (useAvx_)
+                    cc.vmovq(x86::qword_ptr(callFrame, -offset * 4), source);
+                else
+                    cc.movq(x86::qword_ptr(callFrame, -offset * 4), source);
             }
         };
 
@@ -650,9 +671,14 @@ EmitResult FunctionEmitter::EmitCalls(size_t index,
             case asBC_CpyVtoR8: {
                 x86::Vec value = cc.new_xmm("inlineValue64");
                 loadValue64(asBC_SWORDARG0(bodyIp), value);
-                cc.movq(x86::qword_ptr(
-                            regs_, offsetof(asSVMRegisters, valueRegister)),
-                        value);
+                if (useAvx_)
+                    cc.vmovq(x86::qword_ptr(
+                                regs_, offsetof(asSVMRegisters, valueRegister)),
+                            value);
+                else
+                    cc.movq(x86::qword_ptr(
+                                regs_, offsetof(asSVMRegisters, valueRegister)),
+                            value);
                 break;
             }
             case asBC_CpyRtoV4: {

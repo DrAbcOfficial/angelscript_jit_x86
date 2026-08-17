@@ -67,6 +67,7 @@ private:
                           const asDWORD* ip);
     EmitResult EmitNumeric(size_t index, const Instruction& instruction,
                            const asDWORD* ip);
+    size_t EmitPackedFloatBinary(size_t index);
     size_t EmitPackedFloatImmediate(size_t index);
 
     void LoadVar(int offset, const asmjit::x86::Gp& destination);
