@@ -3,7 +3,6 @@
 #include "as_texts.h"
 
 #include <cstddef>
-#include <cstdint>
 
 namespace asjitx86::emit {
 
@@ -57,17 +56,12 @@ EmitResult FunctionEmitter::EmitMemory(size_t index,
     case asBC_CpyVtoR8: {
         if (kInlineCallV8) {
             const int source = asBC_SWORDARG0(ip);
-            if (useSse_) {
+            if (cacheLocals_) {
                 x86::Vec value = cc.new_xmm("value");
                 LoadVar64(source, value);
-                if (useAvx_)
-                    cc.vmovq(x86::qword_ptr(
-                                regs_, offsetof(asSVMRegisters, valueRegister)),
-                            value);
-                else
-                    cc.movq(x86::qword_ptr(
-                                regs_, offsetof(asSVMRegisters, valueRegister)),
-                            value);
+                cc.movq(x86::qword_ptr(
+                            regs_, offsetof(asSVMRegisters, valueRegister)),
+                        value);
             } else {
                 x86::Gp low = cc.new_gp32("low");
                 x86::Gp high = cc.new_gp32("high");
@@ -101,16 +95,11 @@ EmitResult FunctionEmitter::EmitMemory(size_t index,
     case asBC_CpyRtoV8: {
         if (kInlineCallV8) {
             const int destination = asBC_SWORDARG0(ip);
-            if (useSse_) {
+            if (cacheLocals_) {
                 x86::Vec value = cc.new_xmm("value");
-                if (useAvx_)
-                    cc.vmovq(value,
-                            x86::qword_ptr(
-                                regs_, offsetof(asSVMRegisters, valueRegister)));
-                else
-                    cc.movq(value,
-                            x86::qword_ptr(
-                                regs_, offsetof(asSVMRegisters, valueRegister)));
+                cc.movq(value,
+                        x86::qword_ptr(
+                            regs_, offsetof(asSVMRegisters, valueRegister)));
                 StoreVar64(destination, value);
             } else {
                 x86::Gp low = cc.new_gp32("low");
@@ -133,16 +122,7 @@ EmitResult FunctionEmitter::EmitMemory(size_t index,
         if (kInlineLocalV8) {
             const int offset = asBC_SWORDARG0(ip);
             const asQWORD value = asBC_QWORDARG(ip);
-            if (useSse_) {
-                x86::Vec vectorValue = cc.new_xmm("value64");
-                const x86::Mem immediate = cc.new_uint64_const(
-                    ConstPoolScope::kLocal, static_cast<uint64_t>(value));
-                if (useAvx_)
-                    cc.vmovq(vectorValue, immediate);
-                else
-                    cc.movq(vectorValue, immediate);
-                StoreVar64(offset, vectorValue);
-            } else if (cacheLocals_) {
+            if (cacheLocals_) {
                 x86::Gp low = cc.new_gp32("low");
                 x86::Gp high = cc.new_gp32("high");
                 cc.mov(low, Imm(int64_t((int32_t)asDWORD(value))));
@@ -165,7 +145,7 @@ EmitResult FunctionEmitter::EmitMemory(size_t index,
         if (kInlineLocalV8) {
             const int destination = asBC_SWORDARG0(ip);
             const int source = asBC_SWORDARG1(ip);
-            if (useSse_) {
+            if (cacheLocals_) {
                 x86::Vec value = cc.new_xmm("value");
                 LoadVar64(source, value);
                 StoreVar64(destination, value);

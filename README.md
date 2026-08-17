@@ -33,8 +33,8 @@ disabled by default; enable the SSE2+AVX2 variant with
 
 The SSE2 path combines eligible contiguous float arithmetic into four-lane
 operations and uses SIMD transfers for 64-bit VM values. The AVX2 path extends
-eligible float groups to eight lanes and uses VEX-encoded scalar, packed, and
-64-bit transfer instructions throughout generated code.
+eligible float groups to eight lanes and uses VEX-encoded scalar and packed
+floating-point instructions throughout generated code.
 
 Every build checks its required instruction set through AsmJit before creating
 the JIT engine. The default build requires SSE2. The SSE2+AVX2 build additionally

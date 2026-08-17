@@ -145,22 +145,12 @@ void FunctionEmitter::LoadVar64(int offset,
     if (cacheLocals_ && offset > 1 &&
         static_cast<size_t>(offset) < cachedLocals_.size()) {
         x86::Vec high = cc.new_xmm("cachedHigh64");
-        if (useAvx_) {
-            cc.vmovd(destination, cachedLocals_[static_cast<size_t>(offset)]);
-            cc.vmovd(high, cachedLocals_[static_cast<size_t>(offset - 1)]);
-            cc.vpsllq(high, high, 32);
-            cc.vpor(destination, destination, high);
-        } else {
-            cc.movd(destination, cachedLocals_[static_cast<size_t>(offset)]);
-            cc.movd(high, cachedLocals_[static_cast<size_t>(offset - 1)]);
-            cc.psllq(high, 32);
-            cc.por(destination, high);
-        }
+        cc.movd(destination, cachedLocals_[static_cast<size_t>(offset)]);
+        cc.movd(high, cachedLocals_[static_cast<size_t>(offset - 1)]);
+        cc.psllq(high, 32);
+        cc.por(destination, high);
     } else {
-        if (useAvx_)
-            cc.vmovq(destination, x86::qword_ptr(fp_, -offset * 4));
-        else
-            cc.movq(destination, x86::qword_ptr(fp_, -offset * 4));
+        cc.movq(destination, x86::qword_ptr(fp_, -offset * 4));
     }
 }
 
@@ -171,22 +161,12 @@ void FunctionEmitter::StoreVar64(int offset,
     if (cacheLocals_ && offset > 1 &&
         static_cast<size_t>(offset) < cachedLocals_.size()) {
         x86::Vec high = cc.new_xmm("cachedHigh64");
-        if (useAvx_) {
-            cc.vmovd(cachedLocals_[static_cast<size_t>(offset)], source);
-            cc.vmovq(high, source);
-            cc.vpsrlq(high, high, 32);
-            cc.vmovd(cachedLocals_[static_cast<size_t>(offset - 1)], high);
-        } else {
-            cc.movd(cachedLocals_[static_cast<size_t>(offset)], source);
-            cc.movq(high, source);
-            cc.psrlq(high, 32);
-            cc.movd(cachedLocals_[static_cast<size_t>(offset - 1)], high);
-        }
+        cc.movd(cachedLocals_[static_cast<size_t>(offset)], source);
+        cc.movq(high, source);
+        cc.psrlq(high, 32);
+        cc.movd(cachedLocals_[static_cast<size_t>(offset - 1)], high);
     } else {
-        if (useAvx_)
-            cc.vmovq(x86::qword_ptr(fp_, -offset * 4), source);
-        else
-            cc.movq(x86::qword_ptr(fp_, -offset * 4), source);
+        cc.movq(x86::qword_ptr(fp_, -offset * 4), source);
     }
 }
 

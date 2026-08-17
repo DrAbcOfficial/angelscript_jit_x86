@@ -44,23 +44,14 @@ EmitResult FunctionEmitter::EmitStack(size_t, const Instruction& instruction,
         if (kInlineCallV8) {
             const int source = asBC_SWORDARG0(ip);
             x86::Gp sp = cc.new_gp32("sp");
+            x86::Gp low = cc.new_gp32("low");
+            x86::Gp high = cc.new_gp32("high");
             LoadSp(sp);
             cc.sub(sp, 8);
-            if (useSse_) {
-                x86::Vec value = cc.new_xmm("value64");
-                LoadVar64(source, value);
-                if (useAvx_)
-                    cc.vmovq(x86::qword_ptr(sp), value);
-                else
-                    cc.movq(x86::qword_ptr(sp), value);
-            } else {
-                x86::Gp low = cc.new_gp32("low");
-                x86::Gp high = cc.new_gp32("high");
-                cc.mov(low, x86::dword_ptr(fp_, -source * 4));
-                cc.mov(high, x86::dword_ptr(fp_, -source * 4 + 4));
-                cc.mov(x86::dword_ptr(sp), low);
-                cc.mov(x86::dword_ptr(sp, 4), high);
-            }
+            cc.mov(low, x86::dword_ptr(fp_, -source * 4));
+            cc.mov(high, x86::dword_ptr(fp_, -source * 4 + 4));
+            cc.mov(x86::dword_ptr(sp), low);
+            cc.mov(x86::dword_ptr(sp, 4), high);
             StoreSp(sp);
         } else if (!EmitHelperCall(instruction, ip)) {
             return EmitResult::Error;
