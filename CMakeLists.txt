@@ -20,12 +20,6 @@ if(NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
         "Windows: configure with -A Win32. Linux: use -DCMAKE_CXX_FLAGS=-m32 -DCMAKE_C_FLAGS=-m32")
 endif()
 
-if(MSVC)
-    add_compile_options(/arch:IA32)
-elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    add_compile_options(-mno-sse -mno-sse2 -mno-avx -mno-avx2)
-endif()
-
 if(UNIX)
     add_compile_options(-m32)
     add_link_options(-m32)
@@ -96,6 +90,13 @@ target_compile_definitions(as_jit_x86 PRIVATE
     ASJITX86_ENABLE_SSE=$<BOOL:${ASJITX86_ENABLE_SSE}>
     ASJITX86_ENABLE_AVX2=$<BOOL:${ASJITX86_ENABLE_AVX2}>
 )
+
+if(MSVC)
+    target_compile_options(as_jit_x86 PRIVATE /arch:IA32)
+elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(as_jit_x86 PRIVATE
+        -mno-sse -mno-sse2 -mno-avx -mno-avx2)
+endif()
 
 target_link_libraries(as_jit_x86 PRIVATE angelscript asmjit::asmjit)
 
