@@ -306,6 +306,25 @@ int main()
 }
 )AS";
 
+const char* kCallsNestedBits = R"AS(
+int mix(int a, int b) { return (a & b) | (a ^ b); }
+int bumpIn(int v) { return v + 1; }
+int select(int a, int b) { return a < b ? a : b; }
+
+int main()
+{
+    int sum = 0;
+    int limit = 800000;
+    for (int i = 0; i < limit; i++)
+    {
+        sum += mix(i, i * 3);
+        sum += bumpIn(i & 15);
+        sum += select(i & 7, 3);
+    }
+    return sum;
+}
+)AS";
+
 const char* kCallsRecursive = R"AS(
 int fib(int n)
 {
@@ -1292,6 +1311,7 @@ const CaseDef kCases[] = {
     {"arith-double", kArithDouble, nullptr, nullptr, false},
     {"branch-switch", kBranchSwitch, nullptr, nullptr, false},
     {"calls-basic", kCallsBasic, nullptr, nullptr, false},
+    {"calls-nested-bits", kCallsNestedBits, nullptr, nullptr, false},
     {"calls-recursive", kCallsRecursive, nullptr, nullptr, false},
     {"calls-indirect", kCallsIndirect, nullptr, nullptr, false},
     {"class-methods", kClassMethods, nullptr, nullptr, false},

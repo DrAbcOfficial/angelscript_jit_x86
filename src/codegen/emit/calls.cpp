@@ -43,8 +43,11 @@ bool IsInlineScriptOp(asEBCInstr op) {
     case asBC_CpyRtoV4:
     case asBC_CpyVtoG4:
     case asBC_CpyGtoV4:
+    case asBC_PshC4:
     case asBC_PshV4:
     case asBC_PshVPtr:
+    case asBC_PshNull:
+    case asBC_PSF:
     case asBC_PopPtr:
     case asBC_PopRPtr:
     case asBC_LoadThisR:
@@ -70,8 +73,19 @@ bool IsInlineScriptOp(asEBCInstr op) {
     case asBC_MULIf:
     case asBC_NEGi:
     case asBC_BNOT:
+    case asBC_NOT:
+    case asBC_BAND:
+    case asBC_BOR:
+    case asBC_BXOR:
+    case asBC_BSLL:
+    case asBC_BSRL:
+    case asBC_BSRA:
+    case asBC_IncVi:
+    case asBC_DecVi:
     case asBC_CMPi:
     case asBC_CMPIi:
+    case asBC_CMPu:
+    case asBC_CMPIu:
     case asBC_TZ:
     case asBC_TNZ:
     case asBC_TS:
@@ -137,7 +151,7 @@ bool DecodeInlineScriptBody(asCScriptFunction* function,
             static_cast<asEBCInstr>(*instruction & 0xFF);
         const int size = BcSize(op);
         if (size <= 0 || !IsInlineScriptOp(op) ||
-            body.instructions.size() >= 32)
+            body.instructions.size() >= 64)
             return false;
         body.indexOfOffset[offset] =
             static_cast<int>(body.instructions.size());
@@ -166,6 +180,8 @@ bool DecodeInlineScriptBody(asCScriptFunction* function,
                     return false;
                 factoryObjectLocal = -1;
             }
+        } else if (op == asBC_PSF) {
+            if (asBC_SWORDARG0(instruction) > 0) return false;
         } else if (op == asBC_FREE) {
             auto* objectType = reinterpret_cast<asCObjectType*>(
                 asBC_PTRARG(instruction));
@@ -681,6 +697,15 @@ EmitResult FunctionEmitter::EmitCalls(size_t index,
                 storeValue(asBC_SWORDARG0(bodyIp), value);
                 break;
             }
+            case asBC_PshC4: {
+                x86::Gp sp = cc.new_gp32("inlinePushConstSp");
+                LoadSp(sp);
+                cc.sub(sp, 4);
+                cc.mov(x86::dword_ptr(sp),
+                       Imm(int64_t((int32_t)asBC_DWORDARG(bodyIp))));
+                StoreSp(sp);
+                break;
+            }
             case asBC_PshV4: {
                 x86::Gp sp = cc.new_gp32("inlinePushSp");
                 x86::Gp value = cc.new_gp32("inlinePushValue");
@@ -688,6 +713,26 @@ EmitResult FunctionEmitter::EmitCalls(size_t index,
                 cc.sub(sp, 4);
                 loadValue(asBC_SWORDARG0(bodyIp), value);
                 cc.mov(x86::dword_ptr(sp), value);
+                StoreSp(sp);
+                break;
+            }
+            case asBC_PshNull: {
+                x86::Gp sp = cc.new_gp32("inlinePushNullSp");
+                LoadSp(sp);
+                cc.sub(sp, AS_PTR_SIZE * 4);
+                cc.mov(x86::dword_ptr(sp), Imm(0));
+                StoreSp(sp);
+                break;
+            }
+            case asBC_PSF: {
+                x86::Gp sp = cc.new_gp32("inlinePsfSp");
+                x86::Gp address = cc.new_gp32("inlinePsfAddress");
+                LoadSp(sp);
+                cc.sub(sp, 4);
+                cc.lea(address,
+                       x86::dword_ptr(callFrame,
+                                      -asBC_SWORDARG0(bodyIp) * 4));
+                cc.mov(x86::dword_ptr(sp), address);
                 StoreSp(sp);
                 break;
             }
@@ -900,30 +945,82 @@ EmitResult FunctionEmitter::EmitCalls(size_t index,
                 break;
             }
             case asBC_NEGi:
-            case asBC_BNOT: {
+            case asBC_BNOT:
+            case asBC_NOT: {
                 const int destination = asBC_SWORDARG0(bodyIp);
                 x86::Gp value = cc.new_gp32("inlineValue");
                 loadValue(destination, value);
-                if (op == asBC_NEGi)
+                if (op == asBC_NEGi) {
                     cc.neg(value);
-                else
+                } else if (op == asBC_BNOT) {
                     cc.not_(value);
+                } else {
+                    cc.test(value.r8(), value.r8());
+                    cc.set(x86::CondCode::kEqual, value);
+                    cc.movzx(value, value.r8());
+                }
                 storeValue(destination, value);
                 break;
             }
+            case asBC_BAND:
+            case asBC_BOR:
+            case asBC_BXOR:
+            case asBC_BSLL:
+            case asBC_BSRL:
+            case asBC_BSRA: {
+                x86::Gp left = cc.new_gp32("inlineBitsLeft");
+                x86::Gp right = cc.new_gp32("inlineBitsRight");
+                loadValue(asBC_SWORDARG1(bodyIp), left);
+                loadValue(asBC_SWORDARG2(bodyIp), right);
+                if (op == asBC_BAND)
+                    cc.and_(left, right);
+                else if (op == asBC_BOR)
+                    cc.or_(left, right);
+                else if (op == asBC_BXOR)
+                    cc.xor_(left, right);
+                else if (op == asBC_BSLL)
+                    cc.shl(left, right);
+                else if (op == asBC_BSRL)
+                    cc.shr(left, right);
+                else
+                    cc.sar(left, right);
+                storeValue(asBC_SWORDARG0(bodyIp), left);
+                break;
+            }
+            case asBC_IncVi:
+            case asBC_DecVi: {
+                x86::Gp value = cc.new_gp32("inlineInc");
+                loadValue(asBC_SWORDARG0(bodyIp), value);
+                if (op == asBC_IncVi)
+                    cc.inc(value);
+                else
+                    cc.dec(value);
+                storeValue(asBC_SWORDARG0(bodyIp), value);
+                break;
+            }
             case asBC_CMPi:
-            case asBC_CMPIi: {
+            case asBC_CMPIi:
+            case asBC_CMPu:
+            case asBC_CMPIu: {
                 x86::Gp left = cc.new_gp32("inlineLeft");
                 x86::Gp right = cc.new_gp32("inlineRight");
+                const bool isUnsigned =
+                    op == asBC_CMPu || op == asBC_CMPIu;
                 loadValue(asBC_SWORDARG0(bodyIp), left);
-                if (op == asBC_CMPi) {
+                if (op == asBC_CMPi || op == asBC_CMPu) {
                     loadValue(asBC_SWORDARG1(bodyIp), right);
                     cc.cmp(left, right);
+                } else if (op == asBC_CMPIu) {
+                    cc.cmp(left, Imm(int64_t(asBC_DWORDARG(bodyIp))));
                 } else {
                     cc.cmp(left, Imm(int64_t(asBC_INTARG(bodyIp))));
                 }
-                cc.set(x86::CondCode::kSignedGT, left);
-                cc.set(x86::CondCode::kSignedLT, right);
+                cc.set(isUnsigned ? x86::CondCode::kUnsignedGT
+                                  : x86::CondCode::kSignedGT,
+                       left);
+                cc.set(isUnsigned ? x86::CondCode::kUnsignedLT
+                                  : x86::CondCode::kSignedLT,
+                       right);
                 cc.movzx(left, left.r8());
                 cc.movzx(right, right.r8());
                 cc.sub(left, right);
