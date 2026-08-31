@@ -1,8 +1,11 @@
 #include "codegen/emit/emitter.h"
 
+#include "as_texts.h"
+
 namespace asjitx86::emit {
 
-EmitResult FunctionEmitter::EmitStack(size_t, const Instruction& instruction,
+EmitResult FunctionEmitter::EmitStack(size_t index,
+                                      const Instruction& instruction,
                                       const asDWORD* ip) {
     using namespace asmjit;
 
@@ -183,6 +186,53 @@ EmitResult FunctionEmitter::EmitStack(size_t, const Instruction& instruction,
         cc.mov(second, x86::dword_ptr(sp, AS_PTR_SIZE * 4));
         cc.mov(x86::dword_ptr(sp), second);
         cc.mov(x86::dword_ptr(sp, AS_PTR_SIZE * 4), first);
+        return EmitResult::Success;
+    }
+    case asBC_OBJTYPE:
+    case asBC_FuncPtr: {
+        x86::Gp sp = cc.new_gp32("sp");
+        LoadSp(sp);
+        cc.sub(sp, AS_PTR_SIZE * 4);
+        cc.mov(x86::dword_ptr(sp),
+               Imm(int64_t((intptr_t)asBC_PTRARG(ip))));
+        StoreSp(sp);
+        return EmitResult::Success;
+    }
+    case asBC_ADDSi: {
+        x86::Gp sp = cc.new_gp32("sp");
+        x86::Gp address = cc.new_gp32("address");
+        Label fallback = cc.new_label();
+        Label done = cc.new_label();
+        LoadSp(sp);
+        cc.mov(address, x86::dword_ptr(sp));
+        cc.test(address, address);
+        cc.jz(fallback);
+        cc.add(address, asBC_SWORDARG0(ip));
+        cc.mov(x86::dword_ptr(sp), address);
+        cc.jmp(done);
+        cc.bind(fallback);
+        if (!EmitInternalException(index, ip, TXT_NULL_POINTER_ACCESS))
+            return EmitResult::Error;
+        cc.bind(done);
+        return EmitResult::Success;
+    }
+    case asBC_RDSPtr: {
+        x86::Gp sp = cc.new_gp32("sp");
+        x86::Gp address = cc.new_gp32("address");
+        x86::Gp value = cc.new_gp32("value");
+        Label fallback = cc.new_label();
+        Label done = cc.new_label();
+        LoadSp(sp);
+        cc.mov(address, x86::dword_ptr(sp));
+        cc.test(address, address);
+        cc.jz(fallback);
+        cc.mov(value, x86::dword_ptr(address));
+        cc.mov(x86::dword_ptr(sp), value);
+        cc.jmp(done);
+        cc.bind(fallback);
+        if (!EmitInternalException(index, ip, TXT_NULL_POINTER_ACCESS))
+            return EmitResult::Error;
+        cc.bind(done);
         return EmitResult::Success;
     }
     default:

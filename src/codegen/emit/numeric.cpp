@@ -4,8 +4,10 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 
 namespace asjitx86::emit {
 
@@ -27,6 +29,56 @@ void ModI64To(asDWORD loA, asDWORD hiA, asDWORD loB, asDWORD hiB,
     const asQWORD result = asQWORD(asINT64(a) % asINT64(b));
     out[0] = asDWORD(result);
     out[1] = asDWORD(result >> 32);
+}
+
+void DivU64To(asDWORD loA, asDWORD hiA, asDWORD loB, asDWORD hiB,
+              asDWORD* out) {
+    const asQWORD a = asQWORD(loA) | (asQWORD(hiA) << 32);
+    const asQWORD b = asQWORD(loB) | (asQWORD(hiB) << 32);
+    const asQWORD result = a / b;
+    out[0] = asDWORD(result);
+    out[1] = asDWORD(result >> 32);
+}
+
+void ModU64To(asDWORD loA, asDWORD hiA, asDWORD loB, asDWORD hiB,
+              asDWORD* out) {
+    const asQWORD a = asQWORD(loA) | (asQWORD(hiA) << 32);
+    const asQWORD b = asQWORD(loB) | (asQWORD(hiB) << 32);
+    const asQWORD result = a % b;
+    out[0] = asDWORD(result);
+    out[1] = asDWORD(result >> 32);
+}
+
+void Shift64To(asDWORD lo, asDWORD hi, asDWORD count, int mode,
+               asDWORD* out) {
+    const asQWORD value = asQWORD(lo) | (asQWORD(hi) << 32);
+    asQWORD result = 0;
+    if (mode == 0)
+        result = value << count;
+    else if (mode == 1)
+        result = value >> count;
+    else
+        result = asQWORD(asINT64(value) >> count);
+    out[0] = asDWORD(result);
+    out[1] = asDWORD(result >> 32);
+}
+
+asDWORD U32ToFloatBits(asUINT value) {
+    const float converted = float(value);
+    asDWORD bits = 0;
+    std::memcpy(&bits, &converted, sizeof(bits));
+    return bits;
+}
+
+asDWORD ModFloatBits(asDWORD leftBits, asDWORD rightBits) {
+    float left = 0;
+    float right = 0;
+    std::memcpy(&left, &leftBits, sizeof(left));
+    std::memcpy(&right, &rightBits, sizeof(right));
+    const float result = fmodf(left, right);
+    asDWORD bits = 0;
+    std::memcpy(&bits, &result, sizeof(bits));
+    return bits;
 }
 
 }
@@ -1197,6 +1249,191 @@ EmitResult FunctionEmitter::EmitNumeric(size_t index,
         } else if (!EmitHelperCall(instruction, ip)) {
             return EmitResult::Error;
         }
+        return EmitResult::Success;
+    }
+    case asBC_CMPi64:
+    case asBC_CMPu64: {
+        const int left = asBC_SWORDARG0(ip);
+        const int right = asBC_SWORDARG1(ip);
+        const bool isUnsigned = instruction.op == asBC_CMPu64;
+        x86::Gp leftLo = cc.new_gp32("leftLo");
+        x86::Gp leftHi = cc.new_gp32("leftHi");
+        x86::Gp rightLo = cc.new_gp32("rightLo");
+        x86::Gp rightHi = cc.new_gp32("rightHi");
+        x86::Gp result = cc.new_gp32("result");
+        Label less = cc.new_label();
+        Label greater = cc.new_label();
+        Label store = cc.new_label();
+        LoadVar(left, leftLo);
+        LoadVar(left - 1, leftHi);
+        LoadVar(right, rightLo);
+        LoadVar(right - 1, rightHi);
+        cc.cmp(leftHi, rightHi);
+        if (isUnsigned)
+            cc.jb(less);
+        else
+            cc.jl(less);
+        if (isUnsigned)
+            cc.ja(greater);
+        else
+            cc.jg(greater);
+        cc.cmp(leftLo, rightLo);
+        cc.jb(less);
+        cc.ja(greater);
+        cc.xor_(result, result);
+        cc.jmp(store);
+        cc.bind(less);
+        cc.mov(result, -1);
+        cc.jmp(store);
+        cc.bind(greater);
+        cc.mov(result, 1);
+        cc.bind(store);
+        cc.mov(x86::dword_ptr(
+                   regs_, offsetof(asSVMRegisters, valueRegister)),
+               result);
+        return EmitResult::Success;
+    }
+    case asBC_BSLL64:
+    case asBC_BSRL64:
+    case asBC_BSRA64: {
+        const int destination = asBC_SWORDARG0(ip);
+        const int source = asBC_SWORDARG1(ip);
+        const int countOffset = asBC_SWORDARG2(ip);
+        x86::Gp lo = cc.new_gp32("lo");
+        x86::Gp hi = cc.new_gp32("hi");
+        x86::Gp count = cc.new_gp32("count");
+        x86::Gp outPtr = cc.new_gp32("outPtr");
+        x86::Mem outMem = cc.new_stack(8, 4);
+        LoadVar(source, lo);
+        LoadVar(source - 1, hi);
+        LoadVar(countOffset, count);
+        cc.lea(outPtr, outMem);
+        const int mode = instruction.op == asBC_BSLL64
+                             ? 0
+                             : instruction.op == asBC_BSRL64 ? 1 : 2;
+        InvokeNode* invocation = nullptr;
+        Error err = cc.invoke(
+            Out<InvokeNode*>(invocation),
+            Imm(int64_t((intptr_t)&Shift64To)),
+            FuncSignature::build<void, asDWORD, asDWORD, asDWORD, int,
+                                 asDWORD*>());
+        if (err != kErrorOk) return EmitResult::Error;
+        invocation->set_arg(0, lo);
+        invocation->set_arg(1, hi);
+        invocation->set_arg(2, count);
+        invocation->set_arg(3, mode);
+        invocation->set_arg(4, outPtr);
+        cc.mov(lo, x86::dword_ptr(outPtr));
+        cc.mov(hi, x86::dword_ptr(outPtr, 4));
+        StoreVar(destination, lo);
+        StoreVar(destination - 1, hi);
+        return EmitResult::Success;
+    }
+    case asBC_DIVu64:
+    case asBC_MODu64: {
+        const int destination = asBC_SWORDARG0(ip);
+        const int left = asBC_SWORDARG1(ip);
+        const int right = asBC_SWORDARG2(ip);
+        x86::Gp aLo = cc.new_gp32("aLo");
+        x86::Gp aHi = cc.new_gp32("aHi");
+        x86::Gp bLo = cc.new_gp32("bLo");
+        x86::Gp bHi = cc.new_gp32("bHi");
+        x86::Gp resultLo = cc.new_gp32("resultLo");
+        x86::Gp outPtr = cc.new_gp32("outPtr");
+        x86::Mem outMem = cc.new_stack(8, 4);
+        Label divideByZero = cc.new_label();
+        Label done = cc.new_label();
+        LoadVar(left, aLo);
+        LoadVar(left - 1, aHi);
+        LoadVar(right, bLo);
+        LoadVar(right - 1, bHi);
+        cc.mov(resultLo, bLo);
+        cc.or_(resultLo, bHi);
+        cc.jz(divideByZero);
+        cc.lea(outPtr, outMem);
+        InvokeNode* invocation = nullptr;
+        Error err = cc.invoke(
+            Out<InvokeNode*>(invocation),
+            Imm(int64_t((intptr_t)(instruction.op == asBC_DIVu64 ? &DivU64To
+                                                                 : &ModU64To))),
+            FuncSignature::build<void, asDWORD, asDWORD, asDWORD, asDWORD,
+                                 asDWORD*>());
+        if (err != kErrorOk) return EmitResult::Error;
+        invocation->set_arg(0, aLo);
+        invocation->set_arg(1, aHi);
+        invocation->set_arg(2, bLo);
+        invocation->set_arg(3, bHi);
+        invocation->set_arg(4, outPtr);
+        cc.mov(aLo, x86::dword_ptr(outPtr));
+        cc.mov(aHi, x86::dword_ptr(outPtr, 4));
+        StoreVar(destination, aLo);
+        StoreVar(destination - 1, aHi);
+        cc.jmp(done);
+        cc.bind(divideByZero);
+        if (!EmitInternalException(index, ip, TXT_DIVIDE_BY_ZERO))
+            return EmitResult::Error;
+        cc.bind(done);
+        return EmitResult::Success;
+    }
+    case asBC_uTOf: {
+        const int offset = asBC_SWORDARG0(ip);
+        x86::Gp bits = cc.new_gp32("bits");
+        x86::Gp floatBits = cc.new_gp32("floatBits");
+        LoadVar(offset, bits);
+        InvokeNode* invocation = nullptr;
+        Error err = cc.invoke(
+            Out<InvokeNode*>(invocation),
+            Imm(int64_t((intptr_t)&U32ToFloatBits)),
+            FuncSignature::build<asDWORD, asUINT>());
+        if (err != kErrorOk) return EmitResult::Error;
+        invocation->set_arg(0, bits);
+        invocation->set_ret(0, floatBits);
+        StoreVar(offset, floatBits);
+        return EmitResult::Success;
+    }
+    case asBC_ClrHi: {
+        x86::Gp value = cc.new_gp32("value");
+        cc.mov(value,
+               x86::dword_ptr(
+                   regs_, offsetof(asSVMRegisters, valueRegister)));
+        cc.movzx(value, value.r8());
+        cc.mov(x86::dword_ptr(
+                   regs_, offsetof(asSVMRegisters, valueRegister)),
+               value);
+        cc.mov(x86::dword_ptr(
+                   regs_, offsetof(asSVMRegisters, valueRegister) + 4),
+               0);
+        return EmitResult::Success;
+    }
+    case asBC_MODf: {
+        const int destination = asBC_SWORDARG0(ip);
+        const int left = asBC_SWORDARG1(ip);
+        const int right = asBC_SWORDARG2(ip);
+        x86::Gp divisorBits = cc.new_gp32("divisorBits");
+        x86::Gp leftBits = cc.new_gp32("leftBits");
+        x86::Gp rightBits = cc.new_gp32("rightBits");
+        x86::Gp resultBits = cc.new_gp32("resultBits");
+        Label fallback = cc.new_label();
+        Label done = cc.new_label();
+        LoadVar(right, divisorBits);
+        cc.and_(divisorBits, 0x7FFFFFFF);
+        cc.jz(fallback);
+        LoadVar(left, leftBits);
+        LoadVar(right, rightBits);
+        InvokeNode* invocation = nullptr;
+        Error err = cc.invoke(
+            Out<InvokeNode*>(invocation),
+            Imm(int64_t((intptr_t)&ModFloatBits)),
+            FuncSignature::build<asDWORD, asDWORD, asDWORD>());
+        if (err != kErrorOk) return EmitResult::Error;
+        invocation->set_arg(0, leftBits);
+        invocation->set_arg(1, rightBits);
+        invocation->set_ret(0, resultBits);
+        StoreVar(destination, resultBits);
+        cc.jmp(done);
+        cc.bind(fallback);
+        if (!EmitHelperCall(instruction, ip)) return EmitResult::Error;
+        cc.bind(done);
         return EmitResult::Success;
     }
     default:

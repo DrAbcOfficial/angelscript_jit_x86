@@ -97,6 +97,93 @@ int main()
 }
 )AS";
 
+const char* kArithInt64Bits = R"AS(
+int main()
+{
+    int64 value = 1234567890123;
+    int64 mask = 4095;
+    int sum = 0;
+    int limit = 1500000;
+    for (int i = 0; i < limit; i++)
+    {
+        int64 shifted = value << (i & 7);
+        shifted = shifted >> 2;
+        shifted = shifted >>> 1;
+        int64 mixed = (value & mask) | (value ^ mask);
+        if (shifted > value) sum++;
+        if (uint64(shifted) < uint64(value)) sum++;
+        if (shifted == value) sum--;
+        sum += int(mixed & 0x7FFFFFFF);
+        value += 17;
+    }
+    return sum;
+}
+)AS";
+
+const char* kSmallTypes = R"AS(
+int main()
+{
+    int8 a = -8;
+    int16 b = 160;
+    uint8 c = 200;
+    uint16 d = 40000;
+    int sum = 0;
+    int limit = 1500000;
+    for (int i = 0; i < limit; i++)
+    {
+        a++;
+        b--;
+        c++;
+        d--;
+        int ia = int(a);
+        int ib = int(b);
+        int ic = int(c);
+        int id = int(d);
+        int8 packed = int8(ia + i);
+        int16 wide = int16(ib + i);
+        sum += ia + ib + ic + id + int(packed) + int(wide);
+    }
+    return sum;
+}
+)AS";
+
+const char* kFloatMod = R"AS(
+int main()
+{
+    float sum = 0.0f;
+    float value = 17.5f;
+    int limit = 1500000;
+    for (int i = 0; i < limit; i++)
+    {
+        float mod = value % 4.0f;
+        sum += mod;
+        value += 0.75f;
+        if (value > 64.0f) value = 17.5f;
+    }
+    return int(sum);
+}
+)AS";
+
+const char* kListInit = R"AS(
+int main()
+{
+    int sum = 0;
+    int limit = 200000;
+    for (int i = 0; i < limit; i++)
+    {
+        array<int> values = {i & 7, 3, 5, 9};
+        dictionary map = {{"a", i}, {"b", i + 1}};
+        sum += values[0] + values[1] + values[2] + values[3];
+        int a = 0;
+        int b = 0;
+        map.get("a", a);
+        map.get("b", b);
+        sum += a + b;
+    }
+    return sum;
+}
+)AS";
+
 const char* kArithFloat = R"AS(
 int main()
 {
@@ -1196,6 +1283,10 @@ const CaseDef kCases[] = {
     {"arith-int32", kArithInt32, nullptr, nullptr, false},
     {"arith-uint32", kArithUint32, nullptr, nullptr, false},
     {"arith-int64", kArithInt64, nullptr, nullptr, false},
+    {"arith-int64-bits", kArithInt64Bits, nullptr, nullptr, false},
+    {"small-types", kSmallTypes, nullptr, nullptr, false},
+    {"float-mod", kFloatMod, nullptr, nullptr, false},
+    {"list-init", kListInit, nullptr, nullptr, false},
     {"arith-float", kArithFloat, nullptr, nullptr, false},
     {"simd-float", kSimdFloat, nullptr, nullptr, false},
     {"arith-double", kArithDouble, nullptr, nullptr, false},
