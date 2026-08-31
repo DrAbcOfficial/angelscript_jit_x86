@@ -130,6 +130,61 @@ EmitResult FunctionEmitter::EmitStack(size_t, const Instruction& instruction,
         }
         return EmitResult::Success;
     }
+    case asBC_PshC8: {
+        const asQWORD value = asBC_QWORDARG(ip);
+        x86::Gp sp = cc.new_gp32("sp");
+        LoadSp(sp);
+        cc.sub(sp, 8);
+        cc.mov(x86::dword_ptr(sp),
+               Imm(int64_t((int32_t)asDWORD(value))));
+        cc.mov(x86::dword_ptr(sp, 4),
+               Imm(int64_t((int32_t)asDWORD(value >> 32))));
+        StoreSp(sp);
+        return EmitResult::Success;
+    }
+    case asBC_PshG4: {
+        x86::Gp sp = cc.new_gp32("sp");
+        x86::Gp address = cc.new_gp32("address");
+        x86::Gp value = cc.new_gp32("value");
+        LoadSp(sp);
+        cc.sub(sp, 4);
+        cc.mov(address, Imm(int64_t((intptr_t)asBC_PTRARG(ip))));
+        cc.mov(value, x86::dword_ptr(address));
+        cc.mov(x86::dword_ptr(sp), value);
+        StoreSp(sp);
+        return EmitResult::Success;
+    }
+    case asBC_PshGPtr: {
+        x86::Gp sp = cc.new_gp32("sp");
+        x86::Gp address = cc.new_gp32("address");
+        x86::Gp value = cc.new_gp32("value");
+        LoadSp(sp);
+        cc.sub(sp, AS_PTR_SIZE * 4);
+        cc.mov(address, Imm(int64_t((intptr_t)asBC_PTRARG(ip))));
+        cc.mov(value, x86::dword_ptr(address));
+        cc.mov(x86::dword_ptr(sp), value);
+        StoreSp(sp);
+        return EmitResult::Success;
+    }
+    case asBC_PshNull: {
+        x86::Gp sp = cc.new_gp32("sp");
+        LoadSp(sp);
+        cc.sub(sp, AS_PTR_SIZE * 4);
+        cc.mov(x86::dword_ptr(sp), Imm(0));
+        StoreSp(sp);
+        return EmitResult::Success;
+    }
+    case asBC_SwapPtr: {
+        x86::Gp sp = cc.new_gp32("sp");
+        x86::Gp first = cc.new_gp32("first");
+        x86::Gp second = cc.new_gp32("second");
+        LoadSp(sp);
+        cc.mov(first, x86::dword_ptr(sp));
+        cc.mov(second, x86::dword_ptr(sp, AS_PTR_SIZE * 4));
+        cc.mov(x86::dword_ptr(sp), second);
+        cc.mov(x86::dword_ptr(sp, AS_PTR_SIZE * 4), first);
+        return EmitResult::Success;
+    }
     default:
         return EmitResult::Unhandled;
     }

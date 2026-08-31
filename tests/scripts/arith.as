@@ -49,5 +49,22 @@ int main()
 
     g_out += itos(int(0x80000000) / -1) + "\n";
 
+    int powered = 9;
+    powered **= 2;
+    g_out += itos(powered) + "\n";
+    g_out += itos(3 ** 4) + "\n";
+
+    int64 wide = 4294967295;
+    wide = wide + 2;
+    wide = wide - 5;
+    wide = wide * 3;
+    wide = wide / 2;
+    wide = wide % 7;
+    g_out += itos(int(wide)) + "\n";
+
+    uint qu = 4000000000;
+    g_out += itos(int(qu / 7)) + "\n";
+    g_out += itos(int(qu % 7)) + "\n";
+
     return 0;
 }

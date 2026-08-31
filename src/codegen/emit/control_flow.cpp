@@ -109,6 +109,22 @@ EmitResult FunctionEmitter::EmitControlFlow(
         }
         return EmitResult::Success;
     }
+    case asBC_JMPP: {
+        x86::Gp selector = cc.new_gp32("jmpSelector");
+        LoadVar(asBC_SWORDARG0(ip), selector);
+        size_t table = 0;
+        for (size_t j = index + 1; j < instructions_.size(); j++) {
+            if (instructions_[j].op != asBC_JMP) break;
+            const int targetIndex = BranchTargetIndex(
+                instructions_[j], bytecode_ + instructions_[j].off);
+            if (targetIndex < 0) return EmitResult::Error;
+            cc.cmp(selector, Imm(int64_t(int32_t(table))));
+            cc.je(labels_[static_cast<size_t>(targetIndex)]);
+            table++;
+        }
+        if (!EmitHelperCall(instruction, ip)) return EmitResult::Error;
+        return EmitResult::Success;
+    }
     case asBC_JitEntry:
         return EmitResult::Success;
     case asBC_SUSPEND: {
