@@ -38,16 +38,28 @@ bool IsInlineScriptOp(asEBCInstr op) {
     case asBC_SetV4:
     case asBC_SetV8:
     case asBC_CpyVtoV4:
+    case asBC_CpyVtoV8:
     case asBC_CpyVtoR4:
     case asBC_CpyVtoR8:
     case asBC_CpyRtoV4:
+    case asBC_CpyRtoV8:
     case asBC_CpyVtoG4:
     case asBC_CpyGtoV4:
     case asBC_PshC4:
+    case asBC_PshC8:
     case asBC_PshV4:
+    case asBC_PshV8:
     case asBC_PshVPtr:
     case asBC_PshNull:
+    case asBC_PshRPtr:
+    case asBC_TYPEID:
+    case asBC_PGA:
     case asBC_PSF:
+    case asBC_GETREF:
+    case asBC_GETOBJ:
+    case asBC_GETOBJREF:
+    case asBC_LoadVObjR:
+    case asBC_SUSPEND:
     case asBC_PopPtr:
     case asBC_PopRPtr:
     case asBC_LoadThisR:
@@ -655,6 +667,20 @@ EmitResult FunctionEmitter::EmitCalls(size_t index,
                 storeValue(asBC_SWORDARG0(bodyIp), value);
                 break;
             }
+            case asBC_CpyVtoV8: {
+                x86::Vec value = cc.new_xmm("inlineCopy64");
+                loadValue64(asBC_SWORDARG1(bodyIp), value);
+                storeValue64(asBC_SWORDARG0(bodyIp), value);
+                break;
+            }
+            case asBC_CpyRtoV8: {
+                x86::Vec value = cc.new_xmm("inlineRet64");
+                cc.movq(value,
+                        x86::qword_ptr(
+                            regs_, offsetof(asSVMRegisters, valueRegister)));
+                storeValue64(asBC_SWORDARG0(bodyIp), value);
+                break;
+            }
             case asBC_CpyVtoR4: {
                 x86::Gp value = cc.new_gp32("inlineValue");
                 loadValue(asBC_SWORDARG0(bodyIp), value);
@@ -716,6 +742,96 @@ EmitResult FunctionEmitter::EmitCalls(size_t index,
                 StoreSp(sp);
                 break;
             }
+            case asBC_PshC8: {
+                const asQWORD immediate = asBC_QWORDARG(bodyIp);
+                x86::Gp sp = cc.new_gp32("inlinePushC8Sp");
+                LoadSp(sp);
+                cc.sub(sp, 8);
+                cc.mov(x86::dword_ptr(sp),
+                       Imm(int64_t((int32_t)asDWORD(immediate))));
+                cc.mov(x86::dword_ptr(sp, 4),
+                       Imm(int64_t((int32_t)asDWORD(immediate >> 32))));
+                StoreSp(sp);
+                break;
+            }
+            case asBC_PshV8: {
+                x86::Gp sp = cc.new_gp32("inlinePushV8Sp");
+                x86::Gp low = cc.new_gp32("inlinePushV8Low");
+                x86::Gp high = cc.new_gp32("inlinePushV8High");
+                LoadSp(sp);
+                cc.sub(sp, 8);
+                loadValue(asBC_SWORDARG0(bodyIp), low);
+                loadValue(asBC_SWORDARG0(bodyIp) - 1, high);
+                cc.mov(x86::dword_ptr(sp), low);
+                cc.mov(x86::dword_ptr(sp, 4), high);
+                StoreSp(sp);
+                break;
+            }
+            case asBC_PshRPtr: {
+                x86::Gp sp = cc.new_gp32("inlinePushRPtrSp");
+                x86::Gp value = cc.new_gp32("inlinePushRPtrValue");
+                LoadSp(sp);
+                cc.sub(sp, AS_PTR_SIZE * 4);
+                cc.mov(value,
+                       x86::dword_ptr(
+                           regs_, offsetof(asSVMRegisters, valueRegister)));
+                cc.mov(x86::dword_ptr(sp), value);
+                StoreSp(sp);
+                break;
+            }
+            case asBC_TYPEID: {
+                x86::Gp sp = cc.new_gp32("inlineTypeIdSp");
+                LoadSp(sp);
+                cc.sub(sp, 4);
+                cc.mov(x86::dword_ptr(sp),
+                       Imm(int64_t(static_cast<int32_t>(
+                           asBC_DWORDARG(bodyIp)))));
+                StoreSp(sp);
+                break;
+            }
+            case asBC_PGA: {
+                x86::Gp sp = cc.new_gp32("inlinePgaSp");
+                LoadSp(sp);
+                cc.sub(sp, AS_PTR_SIZE * 4);
+                cc.mov(x86::dword_ptr(sp),
+                       Imm(int64_t((intptr_t)asBC_PTRARG(bodyIp))));
+                StoreSp(sp);
+                break;
+            }
+            case asBC_LoadVObjR: {
+                x86::Gp address = cc.new_gp32("inlineVObjAddress");
+                cc.lea(address,
+                       x86::dword_ptr(callFrame,
+                                      -asBC_SWORDARG0(bodyIp) * 4));
+                cc.add(address, asBC_SWORDARG1(bodyIp));
+                cc.mov(x86::dword_ptr(
+                           regs_, offsetof(asSVMRegisters, valueRegister)),
+                       address);
+                break;
+            }
+            case asBC_GETREF:
+            case asBC_GETOBJ:
+            case asBC_GETOBJREF: {
+                x86::Gp sp = cc.new_gp32("inlineGetSp");
+                x86::Gp slot = cc.new_gp32("inlineGetSlot");
+                x86::Gp offset = cc.new_gp32("inlineGetOffset");
+                x86::Gp value = cc.new_gp32("inlineGetValue");
+                LoadSp(sp);
+                cc.lea(slot, x86::dword_ptr(sp, asBC_WORDARG0(bodyIp) * 4));
+                cc.mov(offset, x86::dword_ptr(slot));
+                cc.shl(offset, 2);
+                cc.neg(offset);
+                if (op == asBC_GETREF)
+                    cc.lea(value, x86::dword_ptr(callFrame, offset));
+                else
+                    cc.mov(value, x86::dword_ptr(callFrame, offset));
+                cc.mov(x86::dword_ptr(slot), value);
+                if (op == asBC_GETOBJ)
+                    cc.mov(x86::dword_ptr(callFrame, offset), 0);
+                break;
+            }
+            case asBC_SUSPEND:
+                break;
             case asBC_PshNull: {
                 x86::Gp sp = cc.new_gp32("inlinePushNullSp");
                 LoadSp(sp);
@@ -1399,10 +1515,12 @@ EmitResult FunctionEmitter::EmitCalls(size_t index,
         if (DecodeInlineScriptBody(target, inlineBody))
             return emitInlineCall(target, inlineBody, false, -1, false);
 
+        const bool fastSimple = detail::CanFastCallSimpleScript(target);
         InvokeNode* invocation = nullptr;
         Error err = cc.invoke(
             Out<InvokeNode*>(invocation),
-            Imm(int64_t((intptr_t)&detail::CallScriptFunction)),
+            Imm(int64_t((intptr_t)(fastSimple ? &detail::FastCallSimpleScript
+                                              : &detail::CallScriptFunction))),
             FuncSignature::build<int, asSVMRegisters*, asCScriptFunction*,
                                  const asDWORD*>());
         if (err != kErrorOk) return EmitResult::Error;

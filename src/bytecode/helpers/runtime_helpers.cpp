@@ -282,6 +282,62 @@ int ResumeJitCallChain(asSVMRegisters* regs, asUINT callerCallStackLength,
            JITBC_CONTINUE : JITBC_EXIT;
 }
 
+bool CanFastCallSimpleScript(asCScriptFunction* function) {
+    return function && function->funcType == asFUNC_SCRIPT &&
+           function->scriptData &&
+           !function->scriptData->tryCatchInfo.GetLength() &&
+           !function->scriptData->objVariableInfo.GetLength();
+}
+
+int FastCallSimpleScript(asSVMRegisters* regs, asCScriptFunction* function,
+                         const asDWORD* nextBc) {
+    if (regs->doProcessSuspend)
+        return CallScriptFunction(regs, function, nextBc);
+
+    auto* ctx = Ctx(regs);
+    const asUINT callerCallStackLength = ctx->m_callStack.GetLength();
+    regs->programPointer = const_cast<asDWORD*>(nextBc);
+    if (!PushJitCallState(ctx)) return JITBC_EXIT;
+
+    ctx->m_currentFunction = function;
+    ctx->m_regs.programPointer = function->scriptData->byteCode.AddressOf();
+
+    asDWORD* oldStackPointer = ctx->m_regs.stackPointer;
+    if (!ReserveJitStackSpace(ctx, function->scriptData->stackNeeded))
+        return JITBC_EXIT;
+    if (ctx->m_regs.stackPointer != oldStackPointer) {
+        const int argumentDwords =
+            function->GetSpaceNeededForArguments() +
+            (function->objectType ? AS_PTR_SIZE : 0) +
+            (function->DoesReturnOnStack() ? AS_PTR_SIZE : 0);
+        std::memcpy(ctx->m_regs.stackPointer, oldStackPointer,
+                    sizeof(asDWORD) * argumentDwords);
+    }
+
+    ctx->m_regs.stackFramePointer = ctx->m_regs.stackPointer;
+    for (asUINT index = function->scriptData->variables.GetLength();
+         index-- > 0;) {
+        asSScriptVariable* variable =
+            function->scriptData->variables[index];
+        if (variable->stackOffset <= 0) continue;
+        if (variable->onHeap &&
+            (variable->type.IsObject() || variable->type.IsFuncdef())) {
+            *reinterpret_cast<asPWORD*>(
+                &ctx->m_regs.stackFramePointer[-variable->stackOffset]) = 0;
+        }
+    }
+    ctx->m_regs.stackPointer -= function->scriptData->variableSpace;
+
+    asJITFunction jit = function->scriptData->jitFunction;
+    if (!jit)
+        return ResumeJitCallChain(regs, callerCallStackLength);
+    jit(regs, 1);
+    return ctx->m_status == asEXECUTION_ACTIVE &&
+                   ctx->m_callStack.GetLength() == callerCallStackLength
+               ? JITBC_CONTINUE
+               : JITBC_EXIT;
+}
+
 int CallScriptFunction(asSVMRegisters* regs, asCScriptFunction* function,
                        const asDWORD* nextBc) {
     auto* ctx = Ctx(regs);
