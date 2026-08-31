@@ -14,6 +14,9 @@ int ResumeJitCallChain(asSVMRegisters* regs, asUINT callerCallStackLength,
                        unsigned maxDirectDepth = kMaxDirectJitCallDepth);
 int CallScriptFunction(asSVMRegisters* regs, asCScriptFunction* function,
                        const asDWORD* nextBc);
+int FastCallSimpleScript(asSVMRegisters* regs, asCScriptFunction* function,
+                         const asDWORD* nextBc);
+bool CanFastCallSimpleScript(asCScriptFunction* function);
 int CallFunctionPointer(asSVMRegisters* regs, asCScriptFunction* function,
                         const asDWORD* callBc, const asDWORD* nextBc);
 void ReleaseScriptFunction(asCScriptFunction* function);
