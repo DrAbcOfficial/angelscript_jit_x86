@@ -1,5 +1,6 @@
 build/
 build-static/
+build-win32/
 out/
 *.user
 .vs/

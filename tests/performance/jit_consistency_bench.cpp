@@ -26,7 +26,7 @@ namespace {
 constexpr int kDefaultIters = 500000;
 
 void MessageCallback(const asSMessageInfo* msg, void*) {
-    if (msg->type == asMSGTYPE_ERROR) {
+    if (msg->type == asMSGTYPE_ERROR && msg->row > 0) {
         std::fprintf(stderr, "  [msg] %s (%d,%d): %s\n", msg->section, msg->row, msg->col, msg->message);
     }
 }
@@ -261,13 +261,25 @@ void ReportCase(const char* name, const RunResult& ri, const RunResult& rj, doub
     stats.measured++;
 }
 
-void BenchModules(const char* name, asIScriptModule* interpMod, asIScriptModule* jitMod, int iters,
-                  BenchStats& stats) {
+void DiscardModule(asIScriptEngine* engine, asIScriptModule* mod) {
+    if (mod) mod->Discard();
+    engine->GarbageCollect();
+}
+
+void BenchModules(const char* name, asIScriptEngine* interpEngine, asIScriptEngine* jitEngine,
+                  asIScriptModule* interpMod, asIScriptModule* jitMod, int iters, BenchStats& stats,
+                  const char* providerName = nullptr) {
     RunResult ri = RunMain(interpMod);
     RunResult rj = RunMain(jitMod);
     double interpMs = RepeatMain(interpMod, iters, ri.state);
     double jitMs = RepeatMain(jitMod, iters, rj.state);
     ReportCase(name, ri, rj, interpMs, jitMs, stats);
+    if (providerName) {
+        if (asIScriptModule* provider = interpEngine->GetModule(providerName)) provider->Discard();
+        if (asIScriptModule* provider = jitEngine->GetModule(providerName)) provider->Discard();
+    }
+    DiscardModule(interpEngine, interpMod);
+    DiscardModule(jitEngine, jitMod);
 }
 
 } // namespace
@@ -318,6 +330,7 @@ int main(int argc, char** argv) {
             std::printf("JIT probe failed\n");
             return 1;
         }
+        probe->Discard();
     }
 
     const char* scripts[] = {
@@ -348,7 +361,7 @@ int main(int argc, char** argv) {
         base = base.substr(0, base.find('.'));
         asIScriptModule* interpMod = BuildModule(engineInterp, "i_" + base, code);
         asIScriptModule* jitMod = BuildModule(engineJit, "j_" + base, code);
-        BenchModules(scripts[s], interpMod, jitMod, iters, stats);
+        BenchModules(scripts[s], engineInterp, engineJit, interpMod, jitMod, iters, stats);
     }
 
     if (MatchFilter("imports modules", filter) || MatchFilter("imports_consumer.as", filter)) {
@@ -364,7 +377,8 @@ int main(int argc, char** argv) {
                 BuildPair(engineInterp, "imports_provider", provider, "imports_consumer", consumer, true);
             asIScriptModule* jitMod =
                 BuildPair(engineJit, "imports_provider", provider, "imports_consumer", consumer, true);
-            BenchModules("imports modules", interpMod, jitMod, iters, stats);
+            BenchModules("imports modules", engineInterp, engineJit, interpMod, jitMod, iters, stats,
+                         "imports_provider");
         }
     }
 
@@ -375,7 +389,7 @@ int main(int argc, char** argv) {
             "int main() { int total = hostAdd(4, 7); g_out += itos(total) + '\\n'; return total; }";
         asIScriptModule* interpMod = BuildImportedSystem(engineInterp, "i_imported_system", code);
         asIScriptModule* jitMod = BuildImportedSystem(engineJit, "j_imported_system", code);
-        BenchModules("imported system function", interpMod, jitMod, iters, stats);
+        BenchModules("imported system function", engineInterp, engineJit, interpMod, jitMod, iters, stats);
     }
 
     if (MatchFilter("external shared modules", filter) || MatchFilter("shared_consumer.as", filter)) {
@@ -391,7 +405,8 @@ int main(int argc, char** argv) {
                 BuildPair(engineInterp, "shared_provider", provider, "shared_consumer", consumer, false);
             asIScriptModule* jitMod =
                 BuildPair(engineJit, "shared_provider", provider, "shared_consumer", consumer, false);
-            BenchModules("external shared modules", interpMod, jitMod, iters, stats);
+            BenchModules("external shared modules", engineInterp, engineJit, interpMod, jitMod, iters, stats,
+                         "shared_provider");
         }
     }
 
