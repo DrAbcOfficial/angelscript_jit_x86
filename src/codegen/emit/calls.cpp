@@ -115,6 +115,24 @@ bool IsInlineScriptOp(asEBCInstr op) {
     case asBC_JNP:
     case asBC_JLowZ:
     case asBC_JLowNZ:
+    case asBC_CHKREF:
+    case asBC_ChkRefS:
+    case asBC_ChkNullS:
+    case asBC_LDV:
+    case asBC_SetV1:
+    case asBC_SetV2:
+    case asBC_PshG4:
+    case asBC_iTOf:
+    case asBC_fTOi:
+    case asBC_fTOu:
+    case asBC_iTOd:
+    case asBC_dTOi:
+    case asBC_fTOd:
+    case asBC_dTOf:
+    case asBC_CMPf:
+    case asBC_CMPIf:
+    case asBC_DIVf:
+    case asBC_DIVd:
     case asBC_CALL:
     case asBC_STOREOBJ:
     case asBC_LOADOBJ:
@@ -180,8 +198,8 @@ bool DecodeInlineScriptBody(asCScriptFunction* function,
                 if (pendingFactoryObject || factoryObjectLocal >= 0)
                     return false;
                 pendingFactoryObject = true;
-            } else if (depth == 0 && called && called != function &&
-                       DecodeInlineScriptBody(called, nestedCall, 1)) {
+            } else if (depth < 2 && called && called != function &&
+                       DecodeInlineScriptBody(called, nestedCall, depth + 1)) {
                 nestedCall.nestedTarget = called;
             } else {
                 return false;
@@ -650,7 +668,9 @@ EmitResult FunctionEmitter::EmitCalls(size_t index,
             switch (op) {
             case asBC_JitEntry:
                 break;
-            case asBC_SetV4: {
+            case asBC_SetV4:
+            case asBC_SetV1:
+            case asBC_SetV2: {
                 x86::Gp value = cc.new_gp32("inlineValue");
                 cc.mov(value, Imm(int64_t(
                                   static_cast<int32_t>(
@@ -842,6 +862,240 @@ EmitResult FunctionEmitter::EmitCalls(size_t index,
             }
             case asBC_SUSPEND:
                 break;
+            case asBC_CHKREF: {
+                x86::Gp sp = cc.new_gp32("inlineChkSp");
+                x86::Gp address = cc.new_gp32("inlineChkAddress");
+                LoadSp(sp);
+                cc.mov(address, x86::dword_ptr(sp));
+                cc.test(address, address);
+                cc.jz(slow);
+                break;
+            }
+            case asBC_ChkRefS: {
+                x86::Gp sp = cc.new_gp32("inlineChkRefSp");
+                x86::Gp address = cc.new_gp32("inlineChkRefAddress");
+                x86::Gp object = cc.new_gp32("inlineChkRefObject");
+                LoadSp(sp);
+                cc.mov(address, x86::dword_ptr(sp));
+                cc.mov(object, x86::dword_ptr(address));
+                cc.test(object, object);
+                cc.jz(slow);
+                break;
+            }
+            case asBC_ChkNullS: {
+                x86::Gp sp = cc.new_gp32("inlineChkNullSp");
+                x86::Gp value = cc.new_gp32("inlineChkNullValue");
+                LoadSp(sp);
+                cc.mov(value,
+                       x86::dword_ptr(sp, asBC_WORDARG0(bodyIp) * 4));
+                cc.test(value, value);
+                cc.jz(slow);
+                break;
+            }
+            case asBC_LDV: {
+                x86::Gp address = cc.new_gp32("inlineLdvAddress");
+                cc.lea(address,
+                       x86::dword_ptr(callFrame,
+                                      -asBC_SWORDARG0(bodyIp) * 4));
+                cc.mov(x86::dword_ptr(
+                           regs_, offsetof(asSVMRegisters, valueRegister)),
+                       address);
+                break;
+            }
+            case asBC_PshG4: {
+                x86::Gp sp = cc.new_gp32("inlinePshG4Sp");
+                x86::Gp address = cc.new_gp32("inlinePshG4Address");
+                x86::Gp value = cc.new_gp32("inlinePshG4Value");
+                LoadSp(sp);
+                cc.sub(sp, 4);
+                cc.mov(address,
+                       Imm(int64_t((intptr_t)asBC_PTRARG(bodyIp))));
+                cc.mov(value, x86::dword_ptr(address));
+                cc.mov(x86::dword_ptr(sp), value);
+                StoreSp(sp);
+                break;
+            }
+            case asBC_iTOf: {
+                const int offset = asBC_SWORDARG0(bodyIp);
+                x86::Gp bits = cc.new_gp32("inlineItofBits");
+                x86::Vec value = cc.new_xmm_ss("inlineItofValue");
+                loadValue(offset, bits);
+                if (useAvx_)
+                    cc.vcvtsi2ss(value, value, bits);
+                else
+                    cc.cvtsi2ss(value, bits);
+                if (useAvx_)
+                    cc.vmovd(bits, value);
+                else
+                    cc.movd(bits, value);
+                storeValue(offset, bits);
+                break;
+            }
+            case asBC_fTOi:
+            case asBC_fTOu: {
+                const int offset = asBC_SWORDARG0(bodyIp);
+                x86::Gp bits = cc.new_gp32("inlineFtoiBits");
+                x86::Vec value = cc.new_xmm_ss("inlineFtoiValue");
+                loadValue(offset, bits);
+                if (useAvx_)
+                    cc.vmovd(value, bits);
+                else
+                    cc.movd(value, bits);
+                if (useAvx_)
+                    cc.vcvttss2si(bits, value);
+                else
+                    cc.cvttss2si(bits, value);
+                storeValue(offset, bits);
+                break;
+            }
+            case asBC_iTOd: {
+                x86::Gp bits = cc.new_gp32("inlineItodBits");
+                x86::Vec value = cc.new_xmm_sd("inlineItodValue");
+                loadValue(asBC_SWORDARG1(bodyIp), bits);
+                if (useAvx_)
+                    cc.vcvtsi2sd(value, value, bits);
+                else
+                    cc.cvtsi2sd(value, bits);
+                storeValue64(asBC_SWORDARG0(bodyIp), value);
+                break;
+            }
+            case asBC_dTOi: {
+                x86::Gp bits = cc.new_gp32("inlineDtoiBits");
+                x86::Vec value = cc.new_xmm_sd("inlineDtoiValue");
+                loadValue64(asBC_SWORDARG1(bodyIp), value);
+                if (useAvx_)
+                    cc.vcvttsd2si(bits, value);
+                else
+                    cc.cvttsd2si(bits, value);
+                storeValue(asBC_SWORDARG0(bodyIp), bits);
+                break;
+            }
+            case asBC_fTOd: {
+                x86::Gp bits = cc.new_gp32("inlineFtodBits");
+                x86::Vec value = cc.new_xmm_sd("inlineFtodValue");
+                loadValue(asBC_SWORDARG1(bodyIp), bits);
+                if (useAvx_)
+                    cc.vmovd(value, bits);
+                else
+                    cc.movd(value, bits);
+                if (useAvx_)
+                    cc.vcvtss2sd(value, value, value);
+                else
+                    cc.cvtss2sd(value, value);
+                storeValue64(asBC_SWORDARG0(bodyIp), value);
+                break;
+            }
+            case asBC_dTOf: {
+                x86::Vec value = cc.new_xmm_ss("inlineDtofValue");
+                x86::Gp bits = cc.new_gp32("inlineDtofBits");
+                loadValue64(asBC_SWORDARG1(bodyIp), value);
+                if (useAvx_)
+                    cc.vcvtsd2ss(value, value, value);
+                else
+                    cc.cvtsd2ss(value, value);
+                if (useAvx_)
+                    cc.vmovd(bits, value);
+                else
+                    cc.movd(bits, value);
+                storeValue(asBC_SWORDARG0(bodyIp), bits);
+                break;
+            }
+            case asBC_DIVf: {
+                x86::Gp divisorBits = cc.new_gp32("inlineDivfBits");
+                x86::Gp leftBits = cc.new_gp32("inlineDivfLeftBits");
+                x86::Gp resultBits = cc.new_gp32("inlineDivfResultBits");
+                x86::Vec left = cc.new_xmm_ss("inlineDivfLeft");
+                x86::Vec right = cc.new_xmm_ss("inlineDivfRight");
+                loadValue(asBC_SWORDARG2(bodyIp), divisorBits);
+                cc.and_(divisorBits, 0x7FFFFFFF);
+                cc.jz(slow);
+                loadValue(asBC_SWORDARG1(bodyIp), leftBits);
+                loadValue(asBC_SWORDARG2(bodyIp), resultBits);
+                if (useAvx_) {
+                    cc.vmovd(left, leftBits);
+                    cc.vmovd(right, resultBits);
+                    cc.vdivss(left, left, right);
+                    cc.vmovd(resultBits, left);
+                } else {
+                    cc.movd(left, leftBits);
+                    cc.movd(right, resultBits);
+                    cc.divss(left, right);
+                    cc.movd(resultBits, left);
+                }
+                storeValue(asBC_SWORDARG0(bodyIp), resultBits);
+                break;
+            }
+            case asBC_DIVd: {
+                x86::Gp low = cc.new_gp32("inlineDivdLow");
+                x86::Gp high = cc.new_gp32("inlineDivdHigh");
+                x86::Vec left = cc.new_xmm_sd("inlineDivdLeft");
+                x86::Vec right = cc.new_xmm_sd("inlineDivdRight");
+                loadValue(asBC_SWORDARG2(bodyIp), low);
+                loadValue(asBC_SWORDARG2(bodyIp) - 1, high);
+                cc.and_(high, 0x7FFFFFFF);
+                cc.or_(low, high);
+                cc.jz(slow);
+                loadValue64(asBC_SWORDARG1(bodyIp), left);
+                loadValue64(asBC_SWORDARG2(bodyIp), right);
+                if (useAvx_)
+                    cc.vdivsd(left, left, right);
+                else
+                    cc.divsd(left, right);
+                storeValue64(asBC_SWORDARG0(bodyIp), left);
+                break;
+            }
+            case asBC_CMPf:
+            case asBC_CMPIf: {
+                x86::Vec left = cc.new_xmm_ss("inlineCmpfLeft");
+                x86::Vec right = cc.new_xmm_ss("inlineCmpfRight");
+                x86::Gp leftBits = cc.new_gp32("inlineCmpfLeftBits");
+                x86::Gp result = cc.new_gp32("inlineCmpfResult");
+                loadValue(asBC_SWORDARG0(bodyIp), leftBits);
+                if (useAvx_)
+                    cc.vmovd(left, leftBits);
+                else
+                    cc.movd(left, leftBits);
+                if (op == asBC_CMPf) {
+                    x86::Gp rightBits = cc.new_gp32("inlineCmpfRightBits");
+                    loadValue(asBC_SWORDARG1(bodyIp), rightBits);
+                    if (useAvx_)
+                        cc.vmovd(right, rightBits);
+                    else
+                        cc.movd(right, rightBits);
+                } else {
+                    x86::Gp immediate = cc.new_gp32("inlineCmpfImm");
+                    cc.mov(immediate,
+                           Imm(int64_t((int32_t)asBC_DWORDARG(bodyIp))));
+                    if (useAvx_)
+                        cc.vmovd(right, immediate);
+                    else
+                        cc.movd(right, immediate);
+                }
+                Label less = cc.new_label();
+                Label equal = cc.new_label();
+                Label greater = cc.new_label();
+                Label store = cc.new_label();
+                if (useAvx_)
+                    cc.vucomiss(left, right);
+                else
+                    cc.ucomiss(left, right);
+                cc.jp(greater);
+                cc.jb(less);
+                cc.je(equal);
+                cc.bind(greater);
+                cc.mov(result, 1);
+                cc.jmp(store);
+                cc.bind(less);
+                cc.mov(result, -1);
+                cc.jmp(store);
+                cc.bind(equal);
+                cc.xor_(result, result);
+                cc.bind(store);
+                cc.mov(x86::dword_ptr(
+                           regs_, offsetof(asSVMRegisters, valueRegister)),
+                       result);
+                break;
+            }
             case asBC_PshNull: {
                 x86::Gp sp = cc.new_gp32("inlinePushNullSp");
                 LoadSp(sp);
