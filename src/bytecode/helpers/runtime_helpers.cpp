@@ -581,7 +581,6 @@ int RaiseAndCatchInternalException(asSVMRegisters* regs, const asDWORD* bc,
 
 int BcCallBnd(asSVMRegisters* regs, const asDWORD* bc) {
     auto* ctx = Ctx(regs);
-    asUINT callerCallStackLength = ctx->m_callStack.GetLength();
     int i = asBC_INTARG(bc);
     regs->programPointer = const_cast<asDWORD*>(bc);
     int funcId = ctx->m_engine->importedFunctions[i & ~FUNC_IMPORTED]->boundFunctionId;
@@ -593,9 +592,7 @@ int BcCallBnd(asSVMRegisters* regs, const asDWORD* bc) {
     }
     asCScriptFunction* func = ctx->m_engine->GetScriptFunction(funcId);
     if (func->funcType == asFUNC_SCRIPT) {
-        regs->programPointer += 2;
-        ctx->CallScriptFunction(func);
-        return ResumeJitCallChain(regs, callerCallStackLength);
+        return CallScriptFunction(regs, func, NextBc(bc, 2));
     }
     else if (func->funcType == asFUNC_SYSTEM) {
         regs->stackPointer += CallSystemFunction(func->id, ctx);

@@ -25,7 +25,9 @@ struct SimpleFactoryTarget {
 struct InlineScriptBody {
     std::vector<const asDWORD*> instructions;
     std::vector<SimpleFactoryTarget> factories;
+    std::vector<InlineScriptBody> nestedCalls;
     std::vector<int> indexOfOffset;
+    asCScriptFunction* nestedTarget = nullptr;
     int returnDwords = -1;
 };
 
@@ -145,7 +147,8 @@ bool IsInlineBranch(asEBCInstr op) {
 }
 
 bool DecodeInlineScriptBody(asCScriptFunction* function,
-                            InlineScriptBody& body) {
+                            InlineScriptBody& body,
+                            int depth = 0) {
     if (!function || function->funcType != asFUNC_SCRIPT ||
         !function->scriptData || function->DoesReturnOnStack() ||
         function->scriptData->tryCatchInfo.GetLength() ||
@@ -169,14 +172,20 @@ bool DecodeInlineScriptBody(asCScriptFunction* function,
             static_cast<int>(body.instructions.size());
         body.instructions.push_back(instruction);
         SimpleFactoryTarget factory;
+        InlineScriptBody nestedCall;
         if (op == asBC_CALL) {
             auto* called = function->engine->scriptFunctions[
                 asBC_INTARG(instruction)];
-            if (!DecodeSimpleFactory(function->engine, called, factory))
+            if (DecodeSimpleFactory(function->engine, called, factory)) {
+                if (pendingFactoryObject || factoryObjectLocal >= 0)
+                    return false;
+                pendingFactoryObject = true;
+            } else if (depth == 0 && called && called != function &&
+                       DecodeInlineScriptBody(called, nestedCall, 1)) {
+                nestedCall.nestedTarget = called;
+            } else {
                 return false;
-            if (pendingFactoryObject || factoryObjectLocal >= 0)
-                return false;
-            pendingFactoryObject = true;
+            }
         } else if (op == asBC_STOREOBJ) {
             if (!pendingFactoryObject) return false;
             pendingFactoryObject = false;
@@ -205,6 +214,7 @@ bool DecodeInlineScriptBody(asCScriptFunction* function,
             return false;
         }
         body.factories.push_back(factory);
+        body.nestedCalls.push_back(std::move(nestedCall));
         if (op == asBC_RET) {
             const int returnDwords = asBC_WORDARG0(instruction);
             if (body.returnDwords >= 0 &&
@@ -567,7 +577,7 @@ EmitResult FunctionEmitter::EmitCalls(size_t index,
         return true;
     };
 
-    auto emitInlineBody = [&](asCScriptFunction* target,
+    auto emitInlineBody = [&](auto&& self, asCScriptFunction* target,
                               const InlineScriptBody& body,
                               const Label& slow,
                               const Label& fastDone) -> bool {
@@ -1240,8 +1250,28 @@ EmitResult FunctionEmitter::EmitCalls(size_t index,
             case asBC_CALL: {
                 auto* factory = target->engine->scriptFunctions[
                     asBC_INTARG(bodyIp)];
-                if (!emitSimpleFactory(factory, body.factories[bodyIndex]))
+                if (body.factories[bodyIndex].constructor) {
+                    if (!emitSimpleFactory(factory,
+                                           body.factories[bodyIndex]))
+                        return false;
+                } else if (body.nestedCalls[bodyIndex].nestedTarget) {
+                    Label nestedDone = cc.new_label();
+                    if (!self(self,
+                              body.nestedCalls[bodyIndex].nestedTarget,
+                              body.nestedCalls[bodyIndex], slow,
+                              nestedDone))
+                        return false;
+                    cc.bind(nestedDone);
+                    x86::Gp nestedSp = cc.new_gp32("inlineNestedSp");
+                    LoadSp(nestedSp);
+                    if (body.nestedCalls[bodyIndex].returnDwords)
+                        cc.add(nestedSp,
+                               body.nestedCalls[bodyIndex].returnDwords *
+                                   4);
+                    StoreSp(nestedSp);
+                } else {
                     return false;
+                }
                 break;
             }
             case asBC_STOREOBJ: {
@@ -1383,7 +1413,7 @@ EmitResult FunctionEmitter::EmitCalls(size_t index,
                    Imm(int64_t((intptr_t)target)));
             cc.jne(slow);
         }
-        if (!emitInlineBody(target, body, slow, fastDone))
+        if (!emitInlineBody(emitInlineBody, target, body, slow, fastDone))
             return EmitResult::Error;
         cc.bind(fastDone);
         {
