@@ -37,6 +37,8 @@ set_target_properties(angelscript PROPERTIES
 set(ASMJIT_STATIC TRUE CACHE BOOL "" FORCE)
 set(ASMJIT_NO_NATVIS TRUE CACHE BOOL "" FORCE)
 set(ASMJIT_NO_INSTALL TRUE CACHE BOOL "" FORCE)
+set(ASMJIT_NO_FOREIGN TRUE CACHE BOOL "" FORCE)
+set(ASMJIT_NO_UJIT TRUE CACHE BOOL "" FORCE)
 add_subdirectory(third_party/asmjit EXCLUDE_FROM_ALL)
 
 if(ASJITX86_BUILD_SHARED)
@@ -91,11 +93,53 @@ target_compile_definitions(as_jit_x86 PRIVATE
     ASJITX86_ENABLE_AVX2=$<BOOL:${ASJITX86_ENABLE_AVX2}>
 )
 
+set(_asjitx86_release $<CONFIG:Release,RelWithDebInfo,MinSizeRel>)
+
 if(MSVC)
-    target_compile_options(as_jit_x86 PRIVATE /arch:IA32)
+    target_compile_options(as_jit_x86 PRIVATE
+        /arch:IA32
+        /Gy
+        /Zc:inline
+        /Zc:threadSafeInit-
+        $<${_asjitx86_release}:/GS->
+        $<${_asjitx86_release}:/Oi>
+        $<${_asjitx86_release}:/Oy>
+        $<${_asjitx86_release}:/Gw>)
+    target_compile_options(angelscript PRIVATE
+        /Gy
+        $<${_asjitx86_release}:/GS->
+        $<${_asjitx86_release}:/Oi>
+        $<${_asjitx86_release}:/Oy>
+        $<${_asjitx86_release}:/Gw>)
+    target_compile_options(asmjit PRIVATE /Gy /Gw)
+    set(_asjitx86_release_link /OPT:REF /OPT:ICF)
 elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(as_jit_x86 PRIVATE
-        -mno-sse -mno-sse2 -mno-avx -mno-avx2)
+        -mno-sse -mno-sse2 -mno-avx -mno-avx2
+        -fno-threadsafe-statics
+        -fno-semantic-interposition
+        -ffunction-sections
+        -fdata-sections
+        $<${_asjitx86_release}:-fomit-frame-pointer>
+        $<${_asjitx86_release}:-fno-math-errno>)
+    target_compile_options(angelscript PRIVATE
+        -ffunction-sections
+        -fdata-sections
+        $<${_asjitx86_release}:-fomit-frame-pointer>
+        $<${_asjitx86_release}:-fno-math-errno>)
+    set(_asjitx86_release_link "LINKER:--gc-sections")
+endif()
+
+if(DEFINED _asjitx86_release_link)
+    if(ASJITX86_BUILD_SHARED)
+        set(_asjitx86_link_scope PRIVATE)
+    else()
+        set(_asjitx86_link_scope INTERFACE)
+    endif()
+    foreach(_asjitx86_link_opt IN LISTS _asjitx86_release_link)
+        target_link_options(as_jit_x86 ${_asjitx86_link_scope}
+            $<${_asjitx86_release}:${_asjitx86_link_opt}>)
+    endforeach()
 endif()
 
 target_link_libraries(as_jit_x86 PRIVATE angelscript asmjit::asmjit)

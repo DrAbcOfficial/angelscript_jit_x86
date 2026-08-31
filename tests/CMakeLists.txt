@@ -35,7 +35,7 @@ if(UNIX)
     target_link_libraries(asjitx86_tests PRIVATE pthread dl)
 endif()
 
-if(WIN32)
+if(WIN32 AND ASJITX86_BUILD_SHARED)
     add_custom_command(TARGET asjitx86_tests POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 $<TARGET_FILE:as_jit_x86>
@@ -49,7 +49,7 @@ target_include_directories(asjitx86_benchmark PRIVATE
 )
 target_link_libraries(asjitx86_benchmark PRIVATE as_jit_x86 angelscript)
 
-if(WIN32)
+if(WIN32 AND ASJITX86_BUILD_SHARED)
     add_custom_command(TARGET asjitx86_benchmark POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 $<TARGET_FILE:as_jit_x86>
@@ -78,11 +78,47 @@ if(UNIX)
     target_link_libraries(asjitx86_showcase PRIVATE pthread dl)
 endif()
 
-if(WIN32)
+if(WIN32 AND ASJITX86_BUILD_SHARED)
     add_custom_command(TARGET asjitx86_showcase POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 $<TARGET_FILE:as_jit_x86>
                 $<TARGET_FILE_DIR:asjitx86_showcase>)
+endif()
+
+add_executable(asjitx86_consistency_bench
+    performance/jit_consistency_bench.cpp
+    ${CMAKE_SOURCE_DIR}/third_party/angelscript/sdk/add_on/scriptarray/scriptarray.cpp
+    ${CMAKE_SOURCE_DIR}/third_party/angelscript/sdk/add_on/scriptbuilder/scriptbuilder.cpp
+    ${CMAKE_SOURCE_DIR}/third_party/angelscript/sdk/add_on/scriptdictionary/scriptdictionary.cpp
+    ${CMAKE_SOURCE_DIR}/third_party/angelscript/sdk/add_on/scriptstdstring/scriptstdstring.cpp
+)
+
+target_include_directories(asjitx86_consistency_bench PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party/angelscript/sdk/angelscript/include
+    ${CMAKE_SOURCE_DIR}/third_party/angelscript/sdk/angelscript/source
+    ${CMAKE_SOURCE_DIR}/third_party/angelscript/sdk/add_on
+    ${CMAKE_SOURCE_DIR}/third_party/angelscript/sdk/add_on/scriptarray
+    ${CMAKE_SOURCE_DIR}/third_party/angelscript/sdk/add_on/scriptbuilder
+    ${CMAKE_SOURCE_DIR}/third_party/angelscript/sdk/add_on/scriptdictionary
+    ${CMAKE_SOURCE_DIR}/third_party/angelscript/sdk/add_on/scriptstdstring
+)
+
+target_compile_definitions(asjitx86_consistency_bench PRIVATE
+    ASJITX86_SCRIPT_DIR="${CMAKE_CURRENT_SOURCE_DIR}/scripts"
+)
+
+target_link_libraries(asjitx86_consistency_bench PRIVATE as_jit_x86 angelscript)
+
+if(UNIX)
+    target_link_libraries(asjitx86_consistency_bench PRIVATE pthread dl)
+endif()
+
+if(WIN32 AND ASJITX86_BUILD_SHARED)
+    add_custom_command(TARGET asjitx86_consistency_bench POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                $<TARGET_FILE:as_jit_x86>
+                $<TARGET_FILE_DIR:asjitx86_consistency_bench>)
 endif()
 
 add_test(NAME jit_consistency COMMAND asjitx86_tests

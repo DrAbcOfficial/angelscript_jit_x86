@@ -34,9 +34,11 @@ Create the JIT after the engine; destroy the JIT before `engine->Release()`. `Ji
 
 ## Tests
 
-`ctest` runs `jit_consistency` (cwd `tests/`) and `cpu_requirements`. Benchmark/showcase binaries are not tests.
+`ctest` runs `jit_consistency` (cwd `tests/`) and `cpu_requirements`. Benchmark/showcase/consistency-bench binaries are not tests.
 
-Consistency: each `tests/scripts/*.as` listed in `tests/consistency/jit_consistency.cpp` is built and run on interpreter vs JIT (`main` return, `g_out`, exception). Adding a script means adding the file **and** the array entry. Optional argv: script directory (default `scripts`).
+Consistency: each `tests/scripts/*.as` listed in `tests/consistency/jit_consistency.cpp` is built and run on interpreter vs JIT (`main` return, `g_out`, exception). Adding a script means adding the file **and** the array entry in both `jit_consistency.cpp` and `jit_consistency_bench.cpp`. Optional argv: script directory (default `scripts`).
+
+`asjitx86_consistency_bench` repeats each consistency case 500000 times (Prepare+Execute, `g_out` cleared each iter) on interpreter vs JIT, checks first-run parity, then prints ms/speedup. Args: digits = iterations, path = script dir, otherwise case filter. Default script dir is compiled in (`tests/scripts`). `funcs.as` includes `fib(20)` and dominates runtime.
 
 ```text
 ctest --test-dir build-win32 -C Release -R jit_consistency --output-on-failure
