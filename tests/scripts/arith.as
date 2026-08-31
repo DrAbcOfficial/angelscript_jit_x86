@@ -66,5 +66,25 @@ int main()
     g_out += itos(int(qu / 7)) + "\n";
     g_out += itos(int(qu % 7)) + "\n";
 
+    int64 bits = 1234567890123;
+    bits = bits << 3;
+    bits = bits >> 2;
+    bits = bits >>> 1;
+    g_out += itos(int(bits & 0x7FFFFFFF)) + "\n";
+    g_out += (bits > 100) ? "gt\n" : "le\n";
+
+    int8 n8 = -8;
+    int16 n16 = 160;
+    uint8 u8v = 200;
+    n8++;
+    n16--;
+    g_out += itos(int(n8) + int(n16) + int(u8v)) + "\n";
+
+    float modf = 17.5f % 4.0f;
+    g_out += ftos(modf) + "\n";
+
+    array<int> values = {1, 2, 3};
+    g_out += itos(values[0] + values[1] + values[2]) + "\n";
+
     return 0;
 }

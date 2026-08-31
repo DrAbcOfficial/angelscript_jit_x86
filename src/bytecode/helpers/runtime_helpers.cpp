@@ -288,6 +288,18 @@ int CallScriptFunction(asSVMRegisters* regs, asCScriptFunction* function,
     asUINT callerCallStackLength = ctx->m_callStack.GetLength();
     regs->programPointer = const_cast<asDWORD*>(nextBc);
     PrepareScriptCall(ctx, function);
+    if (ctx->m_status != asEXECUTION_ACTIVE)
+        return JITBC_EXIT;
+    asJITFunction jit = function->scriptData
+                            ? function->scriptData->jitFunction
+                            : nullptr;
+    if (jit) {
+        jit(regs, 1);
+        return ctx->m_status == asEXECUTION_ACTIVE &&
+                       ctx->m_callStack.GetLength() == callerCallStackLength
+                   ? JITBC_CONTINUE
+                   : JITBC_EXIT;
+    }
     return ResumeJitCallChain(regs, callerCallStackLength);
 }
 

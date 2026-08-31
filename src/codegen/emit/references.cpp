@@ -3,11 +3,13 @@
 #include "bytecode/helpers/object_helpers.h"
 
 #include "as_objecttype.h"
+#include "as_texts.h"
 #include "as_scriptengine.h"
 #include "as_scriptfunction.h"
 #include "as_scriptobject.h"
 
 #include <cstddef>
+#include <cstring>
 
 namespace asjitx86::emit {
 
@@ -48,6 +50,10 @@ void FastMoveScriptFunction(void** destination, void** source) {
     if (current) current->Release();
     *destination = *source;
     *source = nullptr;
+}
+
+void* CopyBytes(void* destination, const void* source, asUINT bytes) {
+    return std::memcpy(destination, source, bytes);
 }
 
 bool TryScriptObjectCast(void* object, asCObjectType* targetType) {
@@ -376,6 +382,112 @@ EmitResult FunctionEmitter::EmitReferences(
         StoreSp(sp);
         cc.mov(x86::dword_ptr(regs_, ppOff),
                Imm(int64_t((intptr_t)(ip + instruction.size))));
+        return EmitResult::Success;
+    }
+    case asBC_CHKREF: {
+        x86::Gp sp = cc.new_gp32("sp");
+        x86::Gp address = cc.new_gp32("address");
+        Label fallback = cc.new_label();
+        Label done = cc.new_label();
+        LoadSp(sp);
+        cc.mov(address, x86::dword_ptr(sp));
+        cc.test(address, address);
+        cc.jz(fallback);
+        cc.jmp(done);
+        cc.bind(fallback);
+        if (!EmitInternalException(index, ip, TXT_NULL_POINTER_ACCESS))
+            return EmitResult::Error;
+        cc.bind(done);
+        return EmitResult::Success;
+    }
+    case asBC_ChkRefS: {
+        x86::Gp sp = cc.new_gp32("sp");
+        x86::Gp address = cc.new_gp32("address");
+        x86::Gp object = cc.new_gp32("object");
+        Label fallback = cc.new_label();
+        Label done = cc.new_label();
+        LoadSp(sp);
+        cc.mov(address, x86::dword_ptr(sp));
+        cc.mov(object, x86::dword_ptr(address));
+        cc.test(object, object);
+        cc.jz(fallback);
+        cc.jmp(done);
+        cc.bind(fallback);
+        if (!EmitInternalException(index, ip, TXT_NULL_POINTER_ACCESS))
+            return EmitResult::Error;
+        cc.bind(done);
+        return EmitResult::Success;
+    }
+    case asBC_ChkNullS: {
+        x86::Gp sp = cc.new_gp32("sp");
+        x86::Gp value = cc.new_gp32("value");
+        Label fallback = cc.new_label();
+        Label done = cc.new_label();
+        LoadSp(sp);
+        cc.mov(value, x86::dword_ptr(sp, asBC_WORDARG0(ip) * 4));
+        cc.test(value, value);
+        cc.jz(fallback);
+        cc.jmp(done);
+        cc.bind(fallback);
+        if (!EmitInternalException(index, ip, TXT_NULL_POINTER_ACCESS))
+            return EmitResult::Error;
+        cc.bind(done);
+        return EmitResult::Success;
+    }
+    case asBC_COPY: {
+        x86::Gp sp = cc.new_gp32("sp");
+        x86::Gp destination = cc.new_gp32("destination");
+        x86::Gp source = cc.new_gp32("source");
+        Label fallback = cc.new_label();
+        Label done = cc.new_label();
+        LoadSp(sp);
+        cc.mov(destination, x86::dword_ptr(sp));
+        cc.add(sp, AS_PTR_SIZE * 4);
+        cc.mov(source, x86::dword_ptr(sp));
+        cc.test(destination, destination);
+        cc.jz(fallback);
+        cc.test(source, source);
+        cc.jz(fallback);
+        InvokeNode* invocation = nullptr;
+        Error err = cc.invoke(
+            Out<InvokeNode*>(invocation),
+            Imm(int64_t((intptr_t)&CopyBytes)),
+            FuncSignature::build<void*, void*, const void*, asUINT>());
+        if (err != kErrorOk) return EmitResult::Error;
+        invocation->set_arg(0, destination);
+        invocation->set_arg(1, source);
+        invocation->set_arg(2, asBC_WORDARG0(ip) * 4);
+        cc.mov(x86::dword_ptr(sp), destination);
+        StoreSp(sp);
+        cc.jmp(done);
+        cc.bind(fallback);
+        StoreSp(sp);
+        if (!EmitInternalException(index, ip, TXT_NULL_POINTER_ACCESS))
+            return EmitResult::Error;
+        cc.bind(done);
+        return EmitResult::Success;
+    }
+    case asBC_SetListSize:
+    case asBC_SetListType: {
+        const int listOffset = asBC_SWORDARG0(ip);
+        const asUINT fieldOffset = asBC_DWORDARG(ip);
+        const asUINT value = asBC_DWORDARG(ip + 1);
+        x86::Gp list = cc.new_gp32("list");
+        LoadVar(listOffset, list);
+        cc.mov(x86::dword_ptr(list, int(fieldOffset)), Imm(int64_t(value)));
+        return EmitResult::Success;
+    }
+    case asBC_PshListElmnt: {
+        const int listOffset = asBC_SWORDARG0(ip);
+        const asUINT fieldOffset = asBC_DWORDARG(ip);
+        x86::Gp sp = cc.new_gp32("sp");
+        x86::Gp list = cc.new_gp32("list");
+        LoadVar(listOffset, list);
+        LoadSp(sp);
+        cc.sub(sp, AS_PTR_SIZE * 4);
+        cc.add(list, int(fieldOffset));
+        cc.mov(x86::dword_ptr(sp), list);
+        StoreSp(sp);
         return EmitResult::Success;
     }
     default:
