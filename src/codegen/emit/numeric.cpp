@@ -9,6 +9,28 @@
 
 namespace asjitx86::emit {
 
+namespace {
+
+void DivI64To(asDWORD loA, asDWORD hiA, asDWORD loB, asDWORD hiB,
+              asDWORD* out) {
+    const asQWORD a = asQWORD(loA) | (asQWORD(hiA) << 32);
+    const asQWORD b = asQWORD(loB) | (asQWORD(hiB) << 32);
+    const asQWORD result = asQWORD(asINT64(a) / asINT64(b));
+    out[0] = asDWORD(result);
+    out[1] = asDWORD(result >> 32);
+}
+
+void ModI64To(asDWORD loA, asDWORD hiA, asDWORD loB, asDWORD hiB,
+              asDWORD* out) {
+    const asQWORD a = asQWORD(loA) | (asQWORD(hiA) << 32);
+    const asQWORD b = asQWORD(loB) | (asQWORD(hiB) << 32);
+    const asQWORD result = asQWORD(asINT64(a) % asINT64(b));
+    out[0] = asDWORD(result);
+    out[1] = asDWORD(result >> 32);
+}
+
+}
+
 size_t FunctionEmitter::EmitPackedFloatBinary(size_t index) {
     using namespace asmjit;
 
@@ -243,7 +265,8 @@ EmitResult FunctionEmitter::EmitNumeric(size_t index,
     constexpr bool kInlineCmp6c = true;
     auto& cc = Compiler();
     switch (instruction.op) {
-    case asBC_ADDi64: {
+    case asBC_ADDi64:
+    case asBC_SUBi64: {
         if (kInlineAdd64) {
             const int destination = asBC_SWORDARG0(ip);
             const int left = asBC_SWORDARG1(ip);
@@ -252,17 +275,113 @@ EmitResult FunctionEmitter::EmitNumeric(size_t index,
             x86::Gp high = cc.new_gp32("high");
             x86::Gp rightLow = cc.new_gp32("rightLow");
             x86::Gp rightHigh = cc.new_gp32("rightHigh");
-            cc.mov(low, x86::dword_ptr(fp_, -left * 4));
-            cc.mov(high, x86::dword_ptr(fp_, -left * 4 + 4));
-            cc.mov(rightLow, x86::dword_ptr(fp_, -right * 4));
-            cc.mov(rightHigh, x86::dword_ptr(fp_, -right * 4 + 4));
-            cc.add(low, rightLow);
-            cc.adc(high, rightHigh);
-            cc.mov(x86::dword_ptr(fp_, -destination * 4), low);
-            cc.mov(x86::dword_ptr(fp_, -destination * 4 + 4), high);
+            LoadVar(left, low);
+            LoadVar(left - 1, high);
+            LoadVar(right, rightLow);
+            LoadVar(right - 1, rightHigh);
+            if (instruction.op == asBC_ADDi64) {
+                cc.add(low, rightLow);
+                cc.adc(high, rightHigh);
+            } else {
+                cc.sub(low, rightLow);
+                cc.sbb(high, rightHigh);
+            }
+            StoreVar(destination, low);
+            StoreVar(destination - 1, high);
         } else if (!EmitHelperCall(instruction, ip)) {
             return EmitResult::Error;
         }
+        return EmitResult::Success;
+    }
+    case asBC_MULi64: {
+        const int destination = asBC_SWORDARG0(ip);
+        const int left = asBC_SWORDARG1(ip);
+        const int right = asBC_SWORDARG2(ip);
+        x86::Gp aLo = cc.new_gp32("aLo");
+        x86::Gp aHi = cc.new_gp32("aHi");
+        x86::Gp bLo = cc.new_gp32("bLo");
+        x86::Gp bHi = cc.new_gp32("bHi");
+        x86::Gp lo = cc.new_gp32("mulLo");
+        x86::Gp hi = cc.new_gp32("mulHi");
+        x86::Gp t = cc.new_gp32("mulT");
+        LoadVar(left, aLo);
+        LoadVar(left - 1, aHi);
+        LoadVar(right, bLo);
+        LoadVar(right - 1, bHi);
+        cc.mov(lo, aLo);
+        cc.mul(hi, lo, bLo);
+        cc.mov(t, aHi);
+        cc.imul(t, bLo);
+        cc.add(hi, t);
+        cc.mov(t, bHi);
+        cc.imul(t, aLo);
+        cc.add(hi, t);
+        StoreVar(destination, lo);
+        StoreVar(destination - 1, hi);
+        return EmitResult::Success;
+    }
+    case asBC_NEGi64: {
+        const int destination = asBC_SWORDARG0(ip);
+        x86::Gp low = cc.new_gp32("low");
+        x86::Gp high = cc.new_gp32("high");
+        LoadVar(destination, low);
+        LoadVar(destination - 1, high);
+        cc.neg(low);
+        cc.adc(high, 0);
+        cc.neg(high);
+        StoreVar(destination, low);
+        StoreVar(destination - 1, high);
+        return EmitResult::Success;
+    }
+    case asBC_BNOT64: {
+        const int destination = asBC_SWORDARG0(ip);
+        x86::Gp low = cc.new_gp32("low");
+        x86::Gp high = cc.new_gp32("high");
+        LoadVar(destination, low);
+        LoadVar(destination - 1, high);
+        cc.not_(low);
+        cc.not_(high);
+        StoreVar(destination, low);
+        StoreVar(destination - 1, high);
+        return EmitResult::Success;
+    }
+    case asBC_BAND64:
+    case asBC_BOR64:
+    case asBC_BXOR64: {
+        const int destination = asBC_SWORDARG0(ip);
+        const int left = asBC_SWORDARG1(ip);
+        const int right = asBC_SWORDARG2(ip);
+        x86::Gp low = cc.new_gp32("low");
+        x86::Gp high = cc.new_gp32("high");
+        x86::Gp rightLow = cc.new_gp32("rightLow");
+        x86::Gp rightHigh = cc.new_gp32("rightHigh");
+        LoadVar(left, low);
+        LoadVar(left - 1, high);
+        LoadVar(right, rightLow);
+        LoadVar(right - 1, rightHigh);
+        if (instruction.op == asBC_BAND64) {
+            cc.and_(low, rightLow);
+            cc.and_(high, rightHigh);
+        } else if (instruction.op == asBC_BOR64) {
+            cc.or_(low, rightLow);
+            cc.or_(high, rightHigh);
+        } else {
+            cc.xor_(low, rightLow);
+            cc.xor_(high, rightHigh);
+        }
+        StoreVar(destination, low);
+        StoreVar(destination - 1, high);
+        return EmitResult::Success;
+    }
+    case asBC_uTOi64: {
+        const int destination = asBC_SWORDARG0(ip);
+        const int source = asBC_SWORDARG1(ip);
+        x86::Gp low = cc.new_gp32("low");
+        x86::Gp high = cc.new_gp32("high");
+        LoadVar(source, low);
+        cc.xor_(high, high);
+        StoreVar(destination, low);
+        StoreVar(destination - 1, high);
         return EmitResult::Success;
     }
     case asBC_iTOi64: {
@@ -273,8 +392,8 @@ EmitResult FunctionEmitter::EmitNumeric(size_t index,
         LoadVar(source, low);
         cc.mov(high, low);
         cc.sar(high, 31);
-        cc.mov(x86::dword_ptr(fp_, -destination * 4), low);
-        cc.mov(x86::dword_ptr(fp_, -destination * 4 + 4), high);
+        StoreVar(destination, low);
+        StoreVar(destination - 1, high);
         return EmitResult::Success;
     }
     case asBC_i64TOi: {
@@ -657,6 +776,92 @@ EmitResult FunctionEmitter::EmitNumeric(size_t index,
         }
         return EmitResult::Success;
     }
+    case asBC_DIVu:
+    case asBC_MODu: {
+        const int destination = asBC_SWORDARG0(ip);
+        const int left = asBC_SWORDARG1(ip);
+        const int right = asBC_SWORDARG2(ip);
+        x86::Gp dividend = cc.new_gp32("dividend");
+        x86::Gp divisor = cc.new_gp32("divisor");
+        x86::Gp high = cc.new_gp32("high");
+        Label divideByZero = cc.new_label();
+        Label done = cc.new_label();
+        LoadVar(left, dividend);
+        LoadVar(right, divisor);
+        cc.test(divisor, divisor);
+        cc.jz(divideByZero);
+        cc.xor_(high, high);
+        cc.div(high, dividend, divisor);
+        StoreVar(destination,
+                 instruction.op == asBC_DIVu ? dividend : high);
+        cc.jmp(done);
+        cc.bind(divideByZero);
+        if (!EmitInternalException(index, ip, TXT_DIVIDE_BY_ZERO))
+            return EmitResult::Error;
+        cc.bind(done);
+        return EmitResult::Success;
+    }
+    case asBC_DIVi64:
+    case asBC_MODi64: {
+        const int destination = asBC_SWORDARG0(ip);
+        const int left = asBC_SWORDARG1(ip);
+        const int right = asBC_SWORDARG2(ip);
+        x86::Gp aLo = cc.new_gp32("aLo");
+        x86::Gp aHi = cc.new_gp32("aHi");
+        x86::Gp bLo = cc.new_gp32("bLo");
+        x86::Gp bHi = cc.new_gp32("bHi");
+        x86::Gp resultLo = cc.new_gp32("resultLo");
+        x86::Gp resultHi = cc.new_gp32("resultHi");
+        x86::Gp outPtr = cc.new_gp32("outPtr");
+        x86::Mem outMem = cc.new_stack(8, 4);
+        Label divideByZero = cc.new_label();
+        Label divideOverflow = cc.new_label();
+        Label divide = cc.new_label();
+        Label done = cc.new_label();
+        LoadVar(left, aLo);
+        LoadVar(left - 1, aHi);
+        LoadVar(right, bLo);
+        LoadVar(right - 1, bHi);
+        cc.mov(resultLo, bLo);
+        cc.or_(resultLo, bHi);
+        cc.jz(divideByZero);
+        cc.cmp(bLo, -1);
+        cc.jne(divide);
+        cc.test(bHi, bHi);
+        cc.jnz(divide);
+        cc.test(aLo, aLo);
+        cc.jnz(divide);
+        cc.cmp(aHi, Imm(int64_t(INT32_MIN)));
+        cc.je(divideOverflow);
+        cc.bind(divide);
+        cc.lea(outPtr, outMem);
+        InvokeNode* invocation = nullptr;
+        Error err = cc.invoke(
+            Out<InvokeNode*>(invocation),
+            Imm(int64_t((intptr_t)(instruction.op == asBC_DIVi64 ? &DivI64To
+                                                                 : &ModI64To))),
+            FuncSignature::build<void, asDWORD, asDWORD, asDWORD, asDWORD,
+                                 asDWORD*>());
+        if (err != kErrorOk) return EmitResult::Error;
+        invocation->set_arg(0, aLo);
+        invocation->set_arg(1, aHi);
+        invocation->set_arg(2, bLo);
+        invocation->set_arg(3, bHi);
+        invocation->set_arg(4, outPtr);
+        cc.mov(resultLo, x86::dword_ptr(outPtr));
+        cc.mov(resultHi, x86::dword_ptr(outPtr, 4));
+        StoreVar(destination, resultLo);
+        StoreVar(destination - 1, resultHi);
+        cc.jmp(done);
+        cc.bind(divideByZero);
+        if (!EmitInternalException(index, ip, TXT_DIVIDE_BY_ZERO))
+            return EmitResult::Error;
+        cc.bind(divideOverflow);
+        if (!EmitInternalException(index, ip, TXT_DIVIDE_OVERFLOW))
+            return EmitResult::Error;
+        cc.bind(done);
+        return EmitResult::Success;
+    }
     case asBC_BAND:
     case asBC_BOR:
     case asBC_BXOR:
@@ -709,19 +914,156 @@ EmitResult FunctionEmitter::EmitNumeric(size_t index,
         }
         return EmitResult::Success;
     }
+    case asBC_BNOT: {
+        const int destination = asBC_SWORDARG0(ip);
+        x86::Gp value = cc.new_gp32("x");
+        LoadVar(destination, value);
+        cc.not_(value);
+        StoreVar(destination, value);
+        return EmitResult::Success;
+    }
     case asBC_NOT: {
         if (kInlineNot6b) {
             const int destination = asBC_SWORDARG0(ip);
             x86::Gp value = cc.new_gp32("x");
-            cc.movzx(value,
-                     x86::byte_ptr(fp_, -destination * 4));
-            cc.test(value, value);
+            LoadVar(destination, value);
+            cc.test(value.r8(), value.r8());
             cc.set(x86::CondCode::kEqual, value);
             cc.movzx(value, value.r8());
             StoreVar(destination, value);
         } else if (!EmitHelperCall(instruction, ip)) {
             return EmitResult::Error;
         }
+        return EmitResult::Success;
+    }
+    case asBC_TZ:
+    case asBC_TNZ:
+    case asBC_TS:
+    case asBC_TNS:
+    case asBC_TP:
+    case asBC_TNP: {
+        x86::Gp value = cc.new_gp32("testValue");
+        cc.mov(value,
+               x86::dword_ptr(
+                   regs_, offsetof(asSVMRegisters, valueRegister)));
+        cc.cmp(value, 0);
+        x86::CondCode condition = x86::CondCode::kEqual;
+        switch (instruction.op) {
+        case asBC_TNZ:
+            condition = x86::CondCode::kNotEqual;
+            break;
+        case asBC_TS:
+            condition = x86::CondCode::kSignedLT;
+            break;
+        case asBC_TNS:
+            condition = x86::CondCode::kSignedGE;
+            break;
+        case asBC_TP:
+            condition = x86::CondCode::kSignedGT;
+            break;
+        case asBC_TNP:
+            condition = x86::CondCode::kSignedLE;
+            break;
+        default:
+            break;
+        }
+        cc.set(condition, value);
+        cc.movzx(value, value.r8());
+        cc.mov(x86::dword_ptr(
+                   regs_, offsetof(asSVMRegisters, valueRegister)),
+               value);
+        cc.mov(x86::dword_ptr(
+                   regs_, offsetof(asSVMRegisters, valueRegister) + 4),
+               0);
+        return EmitResult::Success;
+    }
+    case asBC_iTOf: {
+        const int offset = asBC_SWORDARG0(ip);
+        x86::Gp bits = cc.new_gp32("intBits");
+        x86::Vec value = cc.new_xmm_ss("floatValue");
+        LoadVar(offset, bits);
+        if (useAvx_)
+            cc.vcvtsi2ss(value, value, bits);
+        else
+            cc.cvtsi2ss(value, bits);
+        StoreFloatVar(offset, value);
+        return EmitResult::Success;
+    }
+    case asBC_fTOi:
+    case asBC_fTOu: {
+        const int offset = asBC_SWORDARG0(ip);
+        x86::Gp bits = cc.new_gp32("intBits");
+        x86::Vec value = cc.new_xmm_ss("floatValue");
+        LoadFloatVar(offset, value);
+        if (useAvx_)
+            cc.vcvttss2si(bits, value);
+        else
+            cc.cvttss2si(bits, value);
+        StoreVar(offset, bits);
+        return EmitResult::Success;
+    }
+    case asBC_dTOf: {
+        const int destination = asBC_SWORDARG0(ip);
+        const int source = asBC_SWORDARG1(ip);
+        x86::Vec value = cc.new_xmm_ss("floatValue");
+        LoadDoubleVar(source, value);
+        if (useAvx_)
+            cc.vcvtsd2ss(value, value, value);
+        else
+            cc.cvtsd2ss(value, value);
+        StoreFloatVar(destination, value);
+        return EmitResult::Success;
+    }
+    case asBC_fTOd: {
+        const int destination = asBC_SWORDARG0(ip);
+        const int source = asBC_SWORDARG1(ip);
+        x86::Vec value = cc.new_xmm_sd("doubleValue");
+        LoadFloatVar(source, value);
+        if (useAvx_)
+            cc.vcvtss2sd(value, value, value);
+        else
+            cc.cvtss2sd(value, value);
+        StoreDoubleVar(destination, value);
+        return EmitResult::Success;
+    }
+    case asBC_POWi: {
+        const int destination = asBC_SWORDARG0(ip);
+        const int baseOffset = asBC_SWORDARG1(ip);
+        const int expOffset = asBC_SWORDARG2(ip);
+        bool constantSquare = false;
+        for (size_t lookback = index; lookback > 0;) {
+            lookback--;
+            const Instruction& previous = instructions_[lookback];
+            if (previous.op == asBC_JitEntry) continue;
+            if (previous.op != asBC_SetV4) break;
+            const asDWORD* setIp = bytecode_ + previous.off;
+            if (asBC_SWORDARG0(setIp) != expOffset) break;
+            constantSquare = asBC_DWORDARG(setIp) == 2;
+            break;
+        }
+        if (!constantSquare) {
+            if (!EmitHelperCall(instruction, ip)) return EmitResult::Error;
+            return EmitResult::Success;
+        }
+        x86::Gp base = cc.new_gp32("powBase");
+        x86::Gp result = cc.new_gp32("powResult");
+        x86::Gp absBase = cc.new_gp32("powAbs");
+        Label overflow = cc.new_label();
+        Label done = cc.new_label();
+        LoadVar(baseOffset, base);
+        cc.mov(absBase, base);
+        cc.neg(absBase);
+        cc.cmov(x86::CondCode::kSign, absBase, base);
+        cc.cmp(absBase, 46340);
+        cc.ja(overflow);
+        cc.mov(result, base);
+        cc.imul(result, base);
+        StoreVar(destination, result);
+        cc.jmp(done);
+        cc.bind(overflow);
+        if (!EmitInternalException(index, ip, TXT_POW_OVERFLOW))
+            return EmitResult::Error;
+        cc.bind(done);
         return EmitResult::Success;
     }
     case asBC_IncVi:
@@ -768,16 +1110,24 @@ EmitResult FunctionEmitter::EmitNumeric(size_t index,
     }
     case asBC_CMPi:
     case asBC_CMPIi:
+    case asBC_CMPu:
+    case asBC_CMPIu:
     case asBC_CmpPtr: {
         if (kInlineCmp6c) {
             const int left = asBC_SWORDARG0(ip);
+            const bool isUnsigned = instruction.op == asBC_CmpPtr ||
+                                    instruction.op == asBC_CMPu ||
+                                    instruction.op == asBC_CMPIu;
             x86::Gp x = cc.new_gp32("x");
             LoadVar(left, x);
             x86::Gp y = cc.new_gp32("y");
             if (instruction.op == asBC_CMPi ||
-                instruction.op == asBC_CmpPtr) {
+                instruction.op == asBC_CmpPtr ||
+                instruction.op == asBC_CMPu) {
                 LoadVar(asBC_SWORDARG1(ip), y);
                 cc.cmp(x, y);
+            } else if (instruction.op == asBC_CMPIu) {
+                cc.cmp(x, Imm(int64_t(asBC_DWORDARG(ip))));
             } else {
                 cc.cmp(x, Imm(int64_t(asBC_INTARG(ip))));
             }
@@ -794,25 +1144,25 @@ EmitResult FunctionEmitter::EmitNumeric(size_t index,
                     cc.jnz(labels_[static_cast<size_t>(targetIndex)]);
                     break;
                 case asBC_JS:
-                    if (instruction.op == asBC_CmpPtr)
+                    if (isUnsigned)
                         cc.jb(labels_[static_cast<size_t>(targetIndex)]);
                     else
                         cc.js(labels_[static_cast<size_t>(targetIndex)]);
                     break;
                 case asBC_JNS:
-                    if (instruction.op == asBC_CmpPtr)
+                    if (isUnsigned)
                         cc.jae(labels_[static_cast<size_t>(targetIndex)]);
                     else
                         cc.jns(labels_[static_cast<size_t>(targetIndex)]);
                     break;
                 case asBC_JP:
-                    if (instruction.op == asBC_CmpPtr)
+                    if (isUnsigned)
                         cc.ja(labels_[static_cast<size_t>(targetIndex)]);
                     else
                         cc.jg(labels_[static_cast<size_t>(targetIndex)]);
                     break;
                 case asBC_JNP:
-                    if (instruction.op == asBC_CmpPtr)
+                    if (isUnsigned)
                         cc.jbe(labels_[static_cast<size_t>(targetIndex)]);
                     else
                         cc.jle(labels_[static_cast<size_t>(targetIndex)]);
@@ -831,13 +1181,11 @@ EmitResult FunctionEmitter::EmitNumeric(size_t index,
                                regs_, offsetof(asSVMRegisters, valueRegister)),
                            fusedFallValue_[index]);
             } else {
-                cc.set(instruction.op == asBC_CmpPtr
-                           ? x86::CondCode::kUnsignedGT
-                           : x86::CondCode::kSignedGT,
+                cc.set(isUnsigned ? x86::CondCode::kUnsignedGT
+                                  : x86::CondCode::kSignedGT,
                        x);
-                cc.set(instruction.op == asBC_CmpPtr
-                           ? x86::CondCode::kUnsignedLT
-                           : x86::CondCode::kSignedLT,
+                cc.set(isUnsigned ? x86::CondCode::kUnsignedLT
+                                  : x86::CondCode::kSignedLT,
                        y);
                 cc.movzx(x, x.r8());
                 cc.movzx(y, y.r8());

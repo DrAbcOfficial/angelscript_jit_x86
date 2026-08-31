@@ -94,6 +94,8 @@ bool IsCacheableLocalOp(asEBCInstr op) {
     case asBC_DecVi:
     case asBC_CMPi:
     case asBC_CMPIi:
+    case asBC_CMPu:
+    case asBC_CMPIu:
     case asBC_CMPf:
     case asBC_CMPd:
     case asBC_CMPIf:
@@ -103,6 +105,21 @@ bool IsCacheableLocalOp(asEBCInstr op) {
     case asBC_TNS:
     case asBC_TP:
     case asBC_TNP:
+    case asBC_JMPP:
+    case asBC_POWi:
+    case asBC_DIVu:
+    case asBC_MODu:
+    case asBC_ADDi64:
+    case asBC_SUBi64:
+    case asBC_MULi64:
+    case asBC_DIVi64:
+    case asBC_MODi64:
+    case asBC_NEGi64:
+    case asBC_BNOT64:
+    case asBC_BAND64:
+    case asBC_BOR64:
+    case asBC_BXOR64:
+    case asBC_uTOi64:
         return true;
     default:
         return false;
@@ -411,6 +428,8 @@ bool FunctionEmitter::AnalyzeComparisonBranchFusions() {
     for (size_t i = 0; i + 2 < instructions_.size(); i++) {
         if ((instructions_[i].op != asBC_CMPi &&
              instructions_[i].op != asBC_CMPIi &&
+             instructions_[i].op != asBC_CMPu &&
+             instructions_[i].op != asBC_CMPIu &&
              instructions_[i].op != asBC_CmpPtr) ||
             !IsConditionalBranch(instructions_[i + 1].op) ||
             needsLabel_[i + 1])
