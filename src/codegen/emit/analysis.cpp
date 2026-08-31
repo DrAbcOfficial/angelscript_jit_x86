@@ -262,6 +262,7 @@ bool FunctionEmitter::AnalyzeBytecode() {
     refCopyFusionSpan_.assign(instructions_.size(), 0);
     refCopyFusionSkip_.assign(instructions_.size(), 0);
     fusedCmpBranch_.assign(instructions_.size(), 0);
+    fusedInvertBranch_.assign(instructions_.size(), 0);
     fusedFallValue_.assign(instructions_.size(), 2);
 
     if (!AnalyzeLabels() || !AnalyzeCatchTargets()) return false;
@@ -426,23 +427,59 @@ bool FunctionEmitter::AnalyzeComparisonBranchFusions() {
     if (!kFuseCmpBranch || !kInlineCmp6c) return true;
 
     for (size_t i = 0; i + 2 < instructions_.size(); i++) {
-        if ((instructions_[i].op != asBC_CMPi &&
-             instructions_[i].op != asBC_CMPIi &&
-             instructions_[i].op != asBC_CMPu &&
-             instructions_[i].op != asBC_CMPIu &&
-             instructions_[i].op != asBC_CmpPtr) ||
-            !IsConditionalBranch(instructions_[i + 1].op) ||
-            needsLabel_[i + 1])
+        if (instructions_[i].op != asBC_CMPi &&
+            instructions_[i].op != asBC_CMPIi &&
+            instructions_[i].op != asBC_CMPu &&
+            instructions_[i].op != asBC_CMPIu &&
+            instructions_[i].op != asBC_CmpPtr)
             continue;
-        const Instruction& branch = instructions_[i + 1];
+
+        size_t branchIndex = i + 1;
+        bool invert = false;
+        if ((instructions_[i + 1].op == asBC_TZ ||
+             instructions_[i + 1].op == asBC_TNZ) &&
+            i + 3 <= instructions_.size() &&
+            !needsLabel_[i + 1] && !needsLabel_[i + 2] &&
+            IsConditionalBranch(instructions_[i + 2].op) &&
+            (instructions_[i + 2].op == asBC_JZ ||
+             instructions_[i + 2].op == asBC_JNZ ||
+             instructions_[i + 2].op == asBC_JLowZ ||
+             instructions_[i + 2].op == asBC_JLowNZ)) {
+            invert = instructions_[i + 1].op == asBC_TZ;
+            branchIndex = i + 2;
+        } else if (!IsConditionalBranch(instructions_[i + 1].op) ||
+                   needsLabel_[i + 1]) {
+            continue;
+        }
+
+        const Instruction& branch = instructions_[branchIndex];
         const int targetIndex =
             BranchTargetIndex(branch, bytecode_ + branch.off);
         if (targetIndex < 0) return false;
-        const bool fallDead = IsValueRegisterDeadFrom(i + 2);
+        const bool fallDead = IsValueRegisterDeadFrom(branchIndex + 1);
         const bool takenDead =
             IsValueRegisterDeadFrom(static_cast<size_t>(targetIndex));
+        asEBCInstr branchOp = branch.op;
+        if (invert) {
+            switch (branchOp) {
+            case asBC_JZ:
+                branchOp = asBC_JNZ;
+                break;
+            case asBC_JNZ:
+                branchOp = asBC_JZ;
+                break;
+            case asBC_JLowZ:
+                branchOp = asBC_JLowNZ;
+                break;
+            case asBC_JLowNZ:
+                branchOp = asBC_JLowZ;
+                break;
+            default:
+                break;
+            }
+        }
         int fallValue = 2;
-        switch (branch.op) {
+        switch (branchOp) {
         case asBC_JNZ:
         case asBC_JLowNZ:
             fallValue = 0;
@@ -457,7 +494,9 @@ bool FunctionEmitter::AnalyzeComparisonBranchFusions() {
             break;
         }
         if (takenDead && (fallDead || fallValue != 2)) {
-            fusedCmpBranch_[i] = 1;
+            fusedCmpBranch_[i] =
+                static_cast<uint8_t>(branchIndex - i);
+            fusedInvertBranch_[i] = invert ? 1 : 0;
             if (!fallDead)
                 fusedFallValue_[i] = static_cast<int8_t>(fallValue);
         }

@@ -80,6 +80,7 @@ bool FunctionEmitter::EmitInstructions() {
     auto& cc = Compiler();
     for (size_t i = 0; i < instructions_.size(); i++) {
         if (i > 0 && fusedCmpBranch_[i - 1]) continue;
+        if (i > 1 && fusedCmpBranch_[i - 2] == 2) continue;
         if (refCopyFusionSkip_[i]) continue;
         if (needsLabel_[i]) cc.bind(labels_[i]);
         const size_t packedBinaryCount = EmitPackedFloatBinary(i);

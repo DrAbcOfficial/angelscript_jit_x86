@@ -113,6 +113,7 @@ private:
     std::vector<uint8_t> refCopyFusionSpan_;
     std::vector<uint8_t> refCopyFusionSkip_;
     std::vector<uint8_t> fusedCmpBranch_;
+    std::vector<uint8_t> fusedInvertBranch_;
     std::vector<int8_t> fusedFallValue_;
 
     asmjit::CodeHolder code_;

@@ -1184,11 +1184,32 @@ EmitResult FunctionEmitter::EmitNumeric(size_t index,
                 cc.cmp(x, Imm(int64_t(asBC_INTARG(ip))));
             }
             if (fusedCmpBranch_[index]) {
-                const Instruction& branch = instructions_[index + 1];
+                const size_t branchIndex =
+                    index + fusedCmpBranch_[index];
+                const Instruction& branch = instructions_[branchIndex];
+                asEBCInstr branchOp = branch.op;
+                if (fusedInvertBranch_[index]) {
+                    switch (branchOp) {
+                    case asBC_JZ:
+                        branchOp = asBC_JNZ;
+                        break;
+                    case asBC_JNZ:
+                        branchOp = asBC_JZ;
+                        break;
+                    case asBC_JLowZ:
+                        branchOp = asBC_JLowNZ;
+                        break;
+                    case asBC_JLowNZ:
+                        branchOp = asBC_JLowZ;
+                        break;
+                    default:
+                        break;
+                    }
+                }
                 const int targetIndex = BranchTargetIndex(
                     branch, bytecode_ + branch.off);
                 if (targetIndex < 0) return EmitResult::Error;
-                switch (branch.op) {
+                switch (branchOp) {
                 case asBC_JZ:
                     cc.jz(labels_[static_cast<size_t>(targetIndex)]);
                     break;

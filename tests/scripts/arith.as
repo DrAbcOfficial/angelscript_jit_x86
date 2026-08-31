@@ -86,5 +86,9 @@ int main()
     array<int> values = {1, 2, 3};
     g_out += itos(values[0] + values[1] + values[2]) + "\n";
 
+    int mixed = (a & b) | (a ^ b);
+    if (mixed != 0) g_out += itos(mixed) + "\n";
+    else g_out += "zero\n";
+
     return 0;
 }
