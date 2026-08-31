@@ -310,6 +310,7 @@ const char* kCallsNestedBits = R"AS(
 int mix(int a, int b) { return (a & b) | (a ^ b); }
 int bumpIn(int v) { return v + 1; }
 int select(int a, int b) { return a < b ? a : b; }
+int wrap(int x) { return mix(x, x + 1) + mix(x, 3) + bumpIn(x); }
 
 int main()
 {
@@ -317,8 +318,7 @@ int main()
     int limit = 800000;
     for (int i = 0; i < limit; i++)
     {
-        sum += mix(i, i * 3);
-        sum += bumpIn(i & 15);
+        sum += wrap(i);
         sum += select(i & 7, 3);
     }
     return sum;
