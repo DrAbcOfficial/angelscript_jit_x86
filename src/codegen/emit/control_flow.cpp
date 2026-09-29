@@ -61,6 +61,7 @@ EmitResult FunctionEmitter::EmitControlFlow(
     case asBC_JMP: {
         const int targetIndex = BranchTargetIndex(instruction, ip);
         if (targetIndex < 0) return EmitResult::Error;
+        if (targetIndex == int(index) + 1) return EmitResult::Success;
         cc.jmp(labels_[static_cast<size_t>(targetIndex)]);
         return EmitResult::Success;
     }
@@ -74,6 +75,7 @@ EmitResult FunctionEmitter::EmitControlFlow(
     case asBC_JLowNZ: {
         const int targetIndex = BranchTargetIndex(instruction, ip);
         if (targetIndex < 0) return EmitResult::Error;
+        if (targetIndex == int(index) + 1) return EmitResult::Success;
         if (instruction.op == asBC_JLowZ ||
             instruction.op == asBC_JLowNZ)
             cc.cmp(x86::byte_ptr(
@@ -176,14 +178,11 @@ EmitResult FunctionEmitter::EmitControlFlow(
     case asBC_JitEntry:
         return EmitResult::Success;
     case asBC_SUSPEND: {
-        Label process = cc.new_label();
         Label done = cc.new_label();
         cc.cmp(x86::byte_ptr(
                    regs_, offsetof(asSVMRegisters, doProcessSuspend)),
                0);
-        cc.jne(process);
-        cc.jmp(done);
-        cc.bind(process);
+        cc.je(done);
         if (!EmitHelperCall(instruction, ip)) return EmitResult::Error;
         cc.bind(done);
         return EmitResult::Success;

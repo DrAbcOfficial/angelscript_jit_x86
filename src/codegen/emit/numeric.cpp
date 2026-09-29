@@ -791,9 +791,7 @@ EmitResult FunctionEmitter::EmitNumeric(size_t index,
             x86::Gp dividend = cc.new_gp32("dividend");
             x86::Gp divisor = cc.new_gp32("divisor");
             x86::Gp high = cc.new_gp32("high");
-            Label overflowCheck = cc.new_label();
             Label divideByZero = cc.new_label();
-            Label divideOverflow = cc.new_label();
             Label divide = cc.new_label();
             Label done = cc.new_label();
             LoadVar(left, dividend);
@@ -801,11 +799,11 @@ EmitResult FunctionEmitter::EmitNumeric(size_t index,
             cc.test(divisor, divisor);
             cc.jz(divideByZero);
             cc.cmp(divisor, -1);
-            cc.je(overflowCheck);
-            cc.jmp(divide);
-            cc.bind(overflowCheck);
+            cc.jne(divide);
             cc.cmp(dividend, Imm(int64_t(INT32_MIN)));
-            cc.je(divideOverflow);
+            cc.jne(divide);
+            if (!EmitInternalException(index, ip, TXT_DIVIDE_OVERFLOW))
+                return EmitResult::Error;
             cc.bind(divide);
             cc.mov(high, dividend);
             cc.sar(high, 31);
@@ -814,13 +812,8 @@ EmitResult FunctionEmitter::EmitNumeric(size_t index,
                      instruction.op == asBC_DIVi ? dividend : high);
             cc.jmp(done);
 
-            auto emitDivideException = [&](const Label& label,
-                                           const char* message) -> bool {
-                cc.bind(label);
-                return EmitInternalException(index, ip, message);
-            };
-            if (!emitDivideException(divideByZero, TXT_DIVIDE_BY_ZERO) ||
-                !emitDivideException(divideOverflow, TXT_DIVIDE_OVERFLOW))
+            cc.bind(divideByZero);
+            if (!EmitInternalException(index, ip, TXT_DIVIDE_BY_ZERO))
                 return EmitResult::Error;
             cc.bind(done);
         } else if (!EmitHelperCall(instruction, ip)) {
@@ -1323,29 +1316,21 @@ EmitResult FunctionEmitter::EmitNumeric(size_t index,
         x86::Gp lo = cc.new_gp32("lo");
         x86::Gp hi = cc.new_gp32("hi");
         x86::Gp count = cc.new_gp32("count");
-        x86::Gp outPtr = cc.new_gp32("outPtr");
-        x86::Mem outMem = cc.new_stack(8, 4);
         LoadVar(source, lo);
         LoadVar(source - 1, hi);
         LoadVar(countOffset, count);
-        cc.lea(outPtr, outMem);
-        const int mode = instruction.op == asBC_BSLL64
-                             ? 0
-                             : instruction.op == asBC_BSRL64 ? 1 : 2;
-        InvokeNode* invocation = nullptr;
-        Error err = cc.invoke(
-            Out<InvokeNode*>(invocation),
-            Imm(int64_t((intptr_t)&Shift64To)),
-            FuncSignature::build<void, asDWORD, asDWORD, asDWORD, int,
-                                 asDWORD*>());
-        if (err != kErrorOk) return EmitResult::Error;
-        invocation->set_arg(0, lo);
-        invocation->set_arg(1, hi);
-        invocation->set_arg(2, count);
-        invocation->set_arg(3, mode);
-        invocation->set_arg(4, outPtr);
-        cc.mov(lo, x86::dword_ptr(outPtr));
-        cc.mov(hi, x86::dword_ptr(outPtr, 4));
+        // Same shld/shrd pair the C++ compiler emits for the interpreter's
+        // 64-bit shifts, so oversized counts behave identically.
+        if (instruction.op == asBC_BSLL64) {
+            cc.shld(hi, lo, count);
+            cc.shl(lo, count);
+        } else {
+            cc.shrd(lo, hi, count);
+            if (instruction.op == asBC_BSRL64)
+                cc.shr(hi, count);
+            else
+                cc.sar(hi, count);
+        }
         StoreVar(destination, lo);
         StoreVar(destination - 1, hi);
         return EmitResult::Success;
