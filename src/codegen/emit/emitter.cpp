@@ -7,6 +7,7 @@
 #include "as_scriptfunction.h"
 
 #include <cstddef>
+#include <cstdio>
 
 namespace asjitx86::emit {
 
@@ -37,6 +38,11 @@ bool FunctionEmitter::InitializeCompiler() {
 
     Error err = code_.init(runtime_.environment(), runtime_.cpu_features());
     if (err != kErrorOk) return false;
+
+    if (getenv("ASJITX86_LOG")) {
+        logger_ = std::make_unique<FileLogger>(fopen("asjitx86.log", "a"));
+        code_.set_logger(logger_.get());
+    }
 
     compiler_ = std::make_unique<x86::Compiler>(&code_);
     auto& cc = Compiler();
@@ -362,6 +368,11 @@ bool FunctionEmitter::Finalize() {
     asJITFunction compiledFunction = nullptr;
     err = runtime_.add(&compiledFunction, &code_);
     if (err != kErrorOk) return false;
+    if (logger_) {
+        fflush(nullptr);
+        fclose(logger_->_file);
+        logger_.reset();
+    }
 
     asPWORD entryId = 1;
     for (const Instruction& instruction : instructions_) {

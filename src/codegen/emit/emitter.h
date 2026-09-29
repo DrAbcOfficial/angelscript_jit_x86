@@ -118,6 +118,7 @@ private:
 
     asmjit::CodeHolder code_;
     std::unique_ptr<asmjit::x86::Compiler> compiler_;
+    std::unique_ptr<asmjit::FileLogger> logger_;
     asmjit::x86::Gp regs_;
     asmjit::x86::Gp jitArg_;
     asmjit::x86::Gp fp_;

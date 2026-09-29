@@ -3,6 +3,7 @@
 #include "bytecode/bc_info.h"
 #include "bytecode/helpers/object_helpers.h"
 #include "bytecode/helpers/runtime_helpers.h"
+#include "codegen/emit/context_layout.h"
 
 #include "as_objecttype.h"
 #include "as_callfunc.h"
@@ -1800,6 +1801,119 @@ EmitResult FunctionEmitter::EmitCalls(size_t index,
             return emitInlineCall(target, inlineBody, false, -1, false);
 
         const bool fastSimple = detail::CanFastCallSimpleScript(target);
+        // Native fast path: replicate FastCallSimpleScript's prologue inline
+        // and call the callee's jit function directly, so the hot path stays
+        // inside generated code. Falls back to the wrapper when the callee is
+        // not JIT compiled, suspends, or would need stack/callstack growth.
+        const bool nativeCandidate =
+            fastSimple && target->funcType == asFUNC_SCRIPT;
+        Label slow;
+        Label done;
+        if (nativeCandidate) {
+            slow = cc.new_label();
+            done = cc.new_label();
+            x86::Gp jitFn = cc.new_gp32("nativeCallJit");
+            x86::Gp ctx = cc.new_gp32("nativeCallCtx");
+            x86::Gp sp = cc.new_gp32("nativeCallSp");
+            x86::Gp len = cc.new_gp32("nativeCallLen");
+            x86::Gp savedLen = cc.new_gp32("nativeCallSavedLen");
+            x86::Gp tmp = cc.new_gp32("nativeCallTmp");
+            x86::Gp dst = cc.new_gp32("nativeCallDst");
+            x86::Gp blocks = cc.new_gp32("nativeCallBlocks");
+
+            cc.cmp(x86::byte_ptr(
+                       regs_, offsetof(asSVMRegisters, doProcessSuspend)),
+                   0);
+            cc.jne(slow);
+            cc.mov(tmp, Imm(int64_t((intptr_t)target)));
+            cc.mov(jitFn, x86::dword_ptr(tmp, kFnScriptData));
+            cc.mov(jitFn, x86::dword_ptr(jitFn, kDataJitFunction));
+            cc.test(jitFn, jitFn);
+            cc.jz(slow);
+            cc.mov(ctx,
+                   x86::dword_ptr(regs_, offsetof(asSVMRegisters, ctx)));
+            cc.mov(len, x86::dword_ptr(ctx, kCtxCallStack + kArrayLength));
+            cc.cmp(len,
+                   x86::dword_ptr(ctx, kCtxCallStack + kArrayMaxLength));
+            cc.je(slow);
+            cc.mov(blocks, x86::dword_ptr(ctx, kCtxStackBlocks));
+            cc.mov(tmp, x86::dword_ptr(ctx, kCtxStackIndex));
+            cc.mov(blocks, x86::dword_ptr(blocks, tmp, 2));
+            cc.mov(sp, x86::dword_ptr(
+                           regs_, offsetof(asSVMRegisters, stackPointer)));
+            cc.lea(tmp, x86::dword_ptr(
+                            sp, -int((target->scriptData->stackNeeded +
+                                      RESERVE_STACK) *
+                                     4)));
+            cc.cmp(tmp, blocks);
+            cc.jb(slow);
+
+            // Push the jit call state (mirrors PushJitCallState).
+            cc.mov(dst, x86::dword_ptr(ctx, kCtxCallStack));
+            cc.lea(dst, x86::dword_ptr(dst, len, 2));
+            cc.mov(x86::dword_ptr(dst, 0), fp_);
+            cc.mov(tmp, Imm(int64_t((intptr_t)scriptFunction_)));
+            cc.mov(x86::dword_ptr(dst, 4), tmp);
+            cc.mov(tmp,
+                   Imm(int64_t((intptr_t)(ip + instruction.size))));
+            cc.mov(x86::dword_ptr(dst, 8), tmp);
+            cc.mov(x86::dword_ptr(dst, 12), sp);
+            cc.mov(tmp, x86::dword_ptr(ctx, kCtxStackIndex));
+            cc.mov(x86::dword_ptr(dst, 16), tmp);
+            cc.mov(savedLen, len);
+            cc.add(len, CALLSTACK_FRAME_SIZE);
+            cc.mov(x86::dword_ptr(ctx, kCtxCallStack + kArrayLength), len);
+
+            // Callee frame setup (mirrors FastCallSimpleScript).
+            cc.mov(tmp, Imm(int64_t((intptr_t)target)));
+            cc.mov(x86::dword_ptr(ctx, kCtxCurrentFunction), tmp);
+            cc.mov(tmp, Imm(int64_t((intptr_t)target->scriptData
+                                         ->byteCode.AddressOf())));
+            cc.mov(x86::dword_ptr(
+                       regs_, offsetof(asSVMRegisters, programPointer)),
+                   tmp);
+            cc.mov(x86::dword_ptr(
+                       regs_, offsetof(asSVMRegisters, stackFramePointer)),
+                   sp);
+            for (asUINT variableIndex = 0;
+                 variableIndex <
+                     target->scriptData->variables.GetLength();
+                 variableIndex++) {
+                asSScriptVariable* variable =
+                    target->scriptData->variables[variableIndex];
+                if (variable->stackOffset <= 0 || !variable->onHeap ||
+                    !(variable->type.IsObject() ||
+                      variable->type.IsFuncdef()))
+                    continue;
+                cc.mov(x86::dword_ptr(
+                           sp, -int(variable->stackOffset) * 4),
+                       0);
+            }
+            cc.lea(tmp, x86::dword_ptr(
+                            sp, -int(target->scriptData->variableSpace) *
+                                     4));
+            cc.mov(x86::dword_ptr(
+                       regs_, offsetof(asSVMRegisters, stackPointer)),
+                   tmp);
+
+            InvokeNode* nativeInvocation = nullptr;
+            Error nativeError = cc.invoke(
+                Out<InvokeNode*>(nativeInvocation), jitFn,
+                FuncSignature::build<void, asSVMRegisters*, asPWORD>());
+            if (nativeError != kErrorOk) return EmitResult::Error;
+            nativeInvocation->set_arg(0, regs_);
+            nativeInvocation->set_arg(1, Imm(1));
+
+            cc.cmp(x86::dword_ptr(ctx, kCtxStatus),
+                   int(asEXECUTION_ACTIVE));
+            cc.jne(exitLabel_);
+            cc.cmp(savedLen,
+                   x86::dword_ptr(ctx, kCtxCallStack + kArrayLength));
+            cc.jne(exitLabel_);
+            cc.jmp(done);
+            cc.bind(slow);
+        }
+
         InvokeNode* invocation = nullptr;
         Error err = cc.invoke(
             Out<InvokeNode*>(invocation),
@@ -1816,6 +1930,7 @@ EmitResult FunctionEmitter::EmitCalls(size_t index,
         invocation->set_ret(0, result);
         cc.test(result, result);
         cc.jnz(exitLabel_);
+        if (nativeCandidate) cc.bind(done);
         return EmitResult::Success;
     }
     case asBC_CallPtr: {

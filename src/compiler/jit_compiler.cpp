@@ -1,11 +1,35 @@
 #include "compiler/jit_compiler.h"
 #include "bytecode/helpers/object_helpers.h"
 #include "codegen/emit.h"
+#include "codegen/emit/context_layout.h"
+
+#include "as_context.h"
+
+#include <cassert>
+#include <cstdint>
+#include <cstdio>
 
 namespace asjitx86 {
 
+namespace {
+
+// Secondary runtime check for the asCArray offsets hardcoded in
+// context_layout.h (protected members cannot be offsetof'd on MSVC).
+void VerifyEngineLayoutAssumptions(asIScriptEngine* engine) {
+    asCArray<size_t> probe(3);
+    probe.SetLengthNoConstruct(2);
+    assert(reinterpret_cast<uint32_t*>(&probe)[1] == 2);
+    assert(reinterpret_cast<uint32_t*>(&probe)[2] == 3);
+
+    (void)engine;
+}
+
+}  // namespace
+
 X86JitCompiler::X86JitCompiler(asIScriptEngine* engine)
-    : m_objectPool(std::make_unique<detail::ScalarObjectPool>(engine)) {}
+    : m_objectPool(std::make_unique<detail::ScalarObjectPool>(engine)) {
+    VerifyEngineLayoutAssumptions(engine);
+}
 X86JitCompiler::~X86JitCompiler() = default;
 
 int X86JitCompiler::CompileFunction(asIScriptFunction* function, asJITFunction* output) {

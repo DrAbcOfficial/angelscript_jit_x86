@@ -1,6 +1,10 @@
 #include "codegen/emit/emitter.h"
 
+#include "bytecode/bc_helpers.h"
+#include "codegen/emit/context_layout.h"
+
 #include <cstddef>
+#include <cstdlib>
 
 namespace asjitx86::emit {
 
@@ -123,6 +127,50 @@ EmitResult FunctionEmitter::EmitControlFlow(
             table++;
         }
         if (!EmitHelperCall(instruction, ip)) return EmitResult::Error;
+        return EmitResult::Success;
+    }
+    case asBC_RET: {
+        // Pop the jit call state inline (mirrors PopJitCallState) and fall
+        // into the common exit path, returning straight to the native or C++
+        // caller. The helper path handles the empty/marker-frame case that
+        // terminates the outermost script execution.
+        Label slow = cc.new_label();
+        x86::Gp ctx = cc.new_gp32("retCtx");
+        x86::Gp src = cc.new_gp32("retFrame");
+        x86::Gp len = cc.new_gp32("retLen");
+        x86::Gp tmp = cc.new_gp32("retTmp");
+        cc.mov(ctx, x86::dword_ptr(regs_, offsetof(asSVMRegisters, ctx)));
+        cc.mov(len, x86::dword_ptr(ctx, kCtxCallStack + kArrayLength));
+        cc.test(len, len);
+        cc.jz(slow);
+        cc.mov(src, x86::dword_ptr(ctx, kCtxCallStack));
+        cc.lea(src, x86::dword_ptr(src, len, 2,
+                                    -CALLSTACK_FRAME_SIZE * 4));
+        cc.mov(tmp, x86::dword_ptr(src));
+        cc.test(tmp, tmp);
+        cc.jz(slow);
+        cc.mov(x86::dword_ptr(
+                   regs_, offsetof(asSVMRegisters, stackFramePointer)),
+               tmp);
+        cc.mov(tmp, x86::dword_ptr(src, 4));
+        cc.mov(x86::dword_ptr(ctx, kCtxCurrentFunction), tmp);
+        cc.mov(tmp, x86::dword_ptr(src, 8));
+        cc.mov(x86::dword_ptr(
+                   regs_, offsetof(asSVMRegisters, programPointer)),
+               tmp);
+        cc.mov(tmp, x86::dword_ptr(src, 12));
+        cc.add(tmp, asBC_WORDARG0(ip) * 4);
+        cc.mov(x86::dword_ptr(
+                   regs_, offsetof(asSVMRegisters, stackPointer)),
+               tmp);
+        cc.mov(tmp, x86::dword_ptr(src, 16));
+        cc.mov(x86::dword_ptr(ctx, kCtxStackIndex), tmp);
+        cc.sub(len, CALLSTACK_FRAME_SIZE);
+        cc.mov(x86::dword_ptr(ctx, kCtxCallStack + kArrayLength), len);
+        cc.jmp(exitLabel_);
+        cc.bind(slow);
+        if (!EmitHelperCall(instruction, ip)) return EmitResult::Error;
+        cc.jmp(exitLabel_);
         return EmitResult::Success;
     }
     case asBC_JitEntry:
