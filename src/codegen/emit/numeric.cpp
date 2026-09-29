@@ -829,21 +829,18 @@ EmitResult FunctionEmitter::EmitNumeric(size_t index,
         x86::Gp dividend = cc.new_gp32("dividend");
         x86::Gp divisor = cc.new_gp32("divisor");
         x86::Gp high = cc.new_gp32("high");
-        Label divideByZero = cc.new_label();
-        Label done = cc.new_label();
+        Label divide = cc.new_label();
         LoadVar(left, dividend);
         LoadVar(right, divisor);
         cc.test(divisor, divisor);
-        cc.jz(divideByZero);
+        cc.jnz(divide);
+        if (!EmitInternalException(index, ip, TXT_DIVIDE_BY_ZERO))
+            return EmitResult::Error;
+        cc.bind(divide);
         cc.xor_(high, high);
         cc.div(high, dividend, divisor);
         StoreVar(destination,
                  instruction.op == asBC_DIVu ? dividend : high);
-        cc.jmp(done);
-        cc.bind(divideByZero);
-        if (!EmitInternalException(index, ip, TXT_DIVIDE_BY_ZERO))
-            return EmitResult::Error;
-        cc.bind(done);
         return EmitResult::Success;
     }
     case asBC_DIVi64:
@@ -1384,17 +1381,41 @@ EmitResult FunctionEmitter::EmitNumeric(size_t index,
     case asBC_uTOf: {
         const int offset = asBC_SWORDARG0(ip);
         x86::Gp bits = cc.new_gp32("bits");
-        x86::Gp floatBits = cc.new_gp32("floatBits");
+        x86::Gp odd = cc.new_gp32("oddBit");
+        x86::Gp halved = cc.new_gp32("halved");
+        x86::Vec value = cc.new_xmm_ss("value");
+        Label negative = cc.new_label();
+        Label done = cc.new_label();
         LoadVar(offset, bits);
-        InvokeNode* invocation = nullptr;
-        Error err = cc.invoke(
-            Out<InvokeNode*>(invocation),
-            Imm(int64_t((intptr_t)&U32ToFloatBits)),
-            FuncSignature::build<asDWORD, asUINT>());
-        if (err != kErrorOk) return EmitResult::Error;
-        invocation->set_arg(0, bits);
-        invocation->set_ret(0, floatBits);
-        StoreVar(offset, floatBits);
+        // Values >= 0x80000000 convert as (v>>1 | v&1) doubled, matching
+        // the interpreter's unsigned conversion.
+        cc.test(bits, bits);
+        cc.js(negative);
+        if (useAvx_)
+            cc.vcvtsi2ss(value, value, bits);
+        else
+            cc.cvtsi2ss(value, bits);
+        cc.jmp(done);
+        cc.bind(negative);
+        cc.mov(odd, bits);
+        cc.and_(odd, 1);
+        cc.mov(halved, bits);
+        cc.shr(halved, 1);
+        cc.or_(halved, odd);
+        if (useAvx_)
+            cc.vcvtsi2ss(value, value, halved);
+        else
+            cc.cvtsi2ss(value, halved);
+        if (useAvx_)
+            cc.vaddss(value, value, value);
+        else
+            cc.addss(value, value);
+        cc.bind(done);
+        if (useAvx_)
+            cc.vmovd(bits, value);
+        else
+            cc.movd(bits, value);
+        StoreVar(offset, bits);
         return EmitResult::Success;
     }
     case asBC_ClrHi: {

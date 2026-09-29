@@ -201,38 +201,32 @@ EmitResult FunctionEmitter::EmitStack(size_t index,
     case asBC_ADDSi: {
         x86::Gp sp = cc.new_gp32("sp");
         x86::Gp address = cc.new_gp32("address");
-        Label fallback = cc.new_label();
-        Label done = cc.new_label();
+        Label normal = cc.new_label();
         LoadSp(sp);
         cc.mov(address, x86::dword_ptr(sp));
         cc.test(address, address);
-        cc.jz(fallback);
-        cc.add(address, asBC_SWORDARG0(ip));
-        cc.mov(x86::dword_ptr(sp), address);
-        cc.jmp(done);
-        cc.bind(fallback);
+        cc.jnz(normal);
         if (!EmitInternalException(index, ip, TXT_NULL_POINTER_ACCESS))
             return EmitResult::Error;
-        cc.bind(done);
+        cc.bind(normal);
+        cc.add(address, asBC_SWORDARG0(ip));
+        cc.mov(x86::dword_ptr(sp), address);
         return EmitResult::Success;
     }
     case asBC_RDSPtr: {
         x86::Gp sp = cc.new_gp32("sp");
         x86::Gp address = cc.new_gp32("address");
         x86::Gp value = cc.new_gp32("value");
-        Label fallback = cc.new_label();
-        Label done = cc.new_label();
+        Label normal = cc.new_label();
         LoadSp(sp);
         cc.mov(address, x86::dword_ptr(sp));
         cc.test(address, address);
-        cc.jz(fallback);
-        cc.mov(value, x86::dword_ptr(address));
-        cc.mov(x86::dword_ptr(sp), value);
-        cc.jmp(done);
-        cc.bind(fallback);
+        cc.jnz(normal);
         if (!EmitInternalException(index, ip, TXT_NULL_POINTER_ACCESS))
             return EmitResult::Error;
-        cc.bind(done);
+        cc.bind(normal);
+        cc.mov(value, x86::dword_ptr(address));
+        cc.mov(x86::dword_ptr(sp), value);
         return EmitResult::Success;
     }
     default:
