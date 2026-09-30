@@ -248,6 +248,83 @@ bool PreservesValueRegister(asEBCInstr op) {
 
 }
 
+namespace {
+
+// Branchless opcodes that read the 32-bit value register. Window consumers
+// must be branchless so the deferred memory write lands on every path.
+bool ReadsValueRegister32(asEBCInstr op) {
+    switch (op) {
+    case asBC_CpyRtoV4:
+    case asBC_RDR1:
+    case asBC_RDR2:
+    case asBC_RDR4:
+    case asBC_RDR8:
+    case asBC_WRTV1:
+    case asBC_WRTV2:
+    case asBC_WRTV4:
+    case asBC_WRTV8:
+    case asBC_INCi:
+    case asBC_DECi:
+    case asBC_INCf:
+    case asBC_DECf:
+    case asBC_INCd:
+    case asBC_DECd:
+    case asBC_INCi16:
+    case asBC_DECi16:
+    case asBC_INCi8:
+    case asBC_DECi8:
+    case asBC_PshRPtr:
+        return true;
+    default:
+        return false;
+    }
+}
+
+// Opcodes whose emission writes the value register through the forwarding
+// helper, so a following consumer can reuse the value without the memory
+// round trip.
+bool StartsValueRegisterForward(asEBCInstr op) {
+    switch (op) {
+    case asBC_CpyVtoR4:
+    case asBC_LDV:
+    case asBC_LoadVObjR:
+    case asBC_LoadThisR:
+    case asBC_LoadRObjR:
+    case asBC_PopRPtr:
+        return true;
+    default:
+        return false;
+    }
+}
+
+}  // namespace
+
+void FunctionEmitter::AnalyzeValueRegisterForwards() {
+    vrForwardSpan_.assign(instructions_.size(), 0);
+    vrForwardConsume_.assign(instructions_.size(), 0);
+    vrForwardDead_.assign(instructions_.size(), 0);
+    if (!inlineFieldMemory_) return;
+    for (size_t i = 0; i + 1 < instructions_.size(); i++) {
+        if (!StartsValueRegisterForward(instructions_[i].op)) continue;
+        size_t j = i + 1;
+        while (j < instructions_.size()) {
+            if (needsLabel_[j] || refCopyFusionSkip_[j]) break;
+            if (j > 0 && fusedCmpBranch_[j - 1]) break;
+            if (j > 1 && fusedCmpBranch_[j - 2] == 2) break;
+            const asEBCInstr op = instructions_[j].op;
+            if (ReadsValueRegister32(op)) {
+                vrForwardSpan_[i] = static_cast<uint8_t>(j - i);
+                vrForwardConsume_[j] = 1;
+                vrForwardDead_[j] = IsValueRegisterDeadFrom(j + 1) ? 1 : 0;
+                break;
+            }
+            if (WritesValueRegister(op)) break;
+            if (!PreservesValueRegister(op)) break;
+            j++;
+        }
+    }
+}
+
 bool FunctionEmitter::AnalyzeBytecode() {
     bytecode_ = function_->GetByteCode(&bytecodeLength_);
     if (!bytecode_ || bytecodeLength_ == 0) return false;
@@ -267,7 +344,9 @@ bool FunctionEmitter::AnalyzeBytecode() {
 
     if (!AnalyzeLabels() || !AnalyzeCatchTargets()) return false;
     AnalyzeReferenceCopyFusions();
-    return AnalyzeComparisonBranchFusions();
+    if (!AnalyzeComparisonBranchFusions()) return false;
+    AnalyzeValueRegisterForwards();
+    return true;
 }
 
 bool FunctionEmitter::DecodeInstructions() {

@@ -45,9 +45,7 @@ EmitResult FunctionEmitter::EmitMemory(size_t index,
             const int source = asBC_SWORDARG0(ip);
             x86::Gp value = cc.new_gp32("value");
             LoadVar(source, value);
-            cc.mov(x86::dword_ptr(
-                       regs_, offsetof(asSVMRegisters, valueRegister)),
-                   value);
+            StoreValueRegisterForwarded(value);
         } else if (!EmitHelperCall(instruction, ip)) {
             return EmitResult::Error;
         }
@@ -67,9 +65,7 @@ EmitResult FunctionEmitter::EmitMemory(size_t index,
                 x86::Gp high = cc.new_gp32("high");
                 cc.mov(low, x86::dword_ptr(fp_, -source * 4));
                 cc.mov(high, x86::dword_ptr(fp_, -source * 4 + 4));
-                cc.mov(x86::dword_ptr(
-                           regs_, offsetof(asSVMRegisters, valueRegister)),
-                       low);
+                StoreValueRegisterForwarded(low);
                 cc.mov(x86::dword_ptr(
                            regs_, offsetof(asSVMRegisters, valueRegister) + 4),
                        high);
@@ -83,9 +79,7 @@ EmitResult FunctionEmitter::EmitMemory(size_t index,
         if (kInlineValueR4) {
             const int destination = asBC_SWORDARG0(ip);
             x86::Gp value = cc.new_gp32("value");
-            cc.mov(value,
-                   x86::dword_ptr(
-                       regs_, offsetof(asSVMRegisters, valueRegister)));
+            LoadValueRegisterForwarded(value);
             StoreVar(destination, value);
         } else if (!EmitHelperCall(instruction, ip)) {
             return EmitResult::Error;
@@ -104,9 +98,7 @@ EmitResult FunctionEmitter::EmitMemory(size_t index,
             } else {
                 x86::Gp low = cc.new_gp32("low");
                 x86::Gp high = cc.new_gp32("high");
-                cc.mov(low,
-                       x86::dword_ptr(
-                           regs_, offsetof(asSVMRegisters, valueRegister)));
+                LoadValueRegisterForwarded(low);
                 cc.mov(high,
                        x86::dword_ptr(
                            regs_, offsetof(asSVMRegisters, valueRegister) + 4));
@@ -197,9 +189,7 @@ EmitResult FunctionEmitter::EmitMemory(size_t index,
         const int source = asBC_SWORDARG0(ip);
         x86::Gp address = cc.new_gp32("address");
         x86::Gp value = cc.new_gp32("value");
-        cc.mov(address,
-               x86::dword_ptr(
-                   regs_, offsetof(asSVMRegisters, valueRegister)));
+        LoadValueRegisterForwarded(address);
         LoadVar(source, value);
         if (instruction.op == asBC_WRTV1)
             cc.mov(x86::byte_ptr(address), value.r8());
@@ -218,9 +208,7 @@ EmitResult FunctionEmitter::EmitMemory(size_t index,
         x86::Gp address = cc.new_gp32("address");
         x86::Gp low = cc.new_gp32("low");
         x86::Gp high = cc.new_gp32("high");
-        cc.mov(address,
-               x86::dword_ptr(
-                   regs_, offsetof(asSVMRegisters, valueRegister)));
+        LoadValueRegisterForwarded(address);
         cc.mov(low, x86::dword_ptr(fp_, -source * 4));
         cc.mov(high, x86::dword_ptr(fp_, -source * 4 + 4));
         cc.mov(x86::dword_ptr(address), low);
@@ -237,9 +225,7 @@ EmitResult FunctionEmitter::EmitMemory(size_t index,
         const int destination = asBC_SWORDARG0(ip);
         x86::Gp address = cc.new_gp32("address");
         x86::Gp value = cc.new_gp32("value");
-        cc.mov(address,
-               x86::dword_ptr(
-                   regs_, offsetof(asSVMRegisters, valueRegister)));
+        LoadValueRegisterForwarded(address);
         if (instruction.op == asBC_RDR1)
             cc.movzx(value, x86::byte_ptr(address));
         else if (instruction.op == asBC_RDR2)
@@ -258,9 +244,7 @@ EmitResult FunctionEmitter::EmitMemory(size_t index,
         x86::Gp address = cc.new_gp32("address");
         x86::Gp low = cc.new_gp32("low");
         x86::Gp high = cc.new_gp32("high");
-        cc.mov(address,
-               x86::dword_ptr(
-                   regs_, offsetof(asSVMRegisters, valueRegister)));
+        LoadValueRegisterForwarded(address);
         cc.mov(low, x86::dword_ptr(address));
         cc.mov(high, x86::dword_ptr(address, 4));
         cc.mov(x86::dword_ptr(fp_, -destination * 4), low);
@@ -278,9 +262,7 @@ EmitResult FunctionEmitter::EmitMemory(size_t index,
         cc.lea(address,
                x86::dword_ptr(fp_, -objectOffset * 4));
         cc.add(address, propertyOffset);
-        cc.mov(x86::dword_ptr(
-                   regs_, offsetof(asSVMRegisters, valueRegister)),
-               address);
+        StoreValueRegisterForwarded(address);
         return EmitResult::Success;
     }
     case asBC_LoadThisR:
@@ -301,9 +283,7 @@ EmitResult FunctionEmitter::EmitMemory(size_t index,
         cc.test(address, address);
         cc.jz(fallback);
         cc.add(address, propertyOffset);
-        cc.mov(x86::dword_ptr(
-                   regs_, offsetof(asSVMRegisters, valueRegister)),
-               address);
+        StoreValueRegisterForwarded(address);
         cc.jmp(done);
         cc.bind(fallback);
         if (!EmitInternalException(index, ip, TXT_NULL_POINTER_ACCESS))
@@ -333,17 +313,13 @@ EmitResult FunctionEmitter::EmitMemory(size_t index,
         const int source = asBC_SWORDARG0(ip);
         x86::Gp address = cc.new_gp32("address");
         cc.lea(address, x86::dword_ptr(fp_, -source * 4));
-        cc.mov(x86::dword_ptr(
-                   regs_, offsetof(asSVMRegisters, valueRegister)),
-               address);
+        StoreValueRegisterForwarded(address);
         return EmitResult::Success;
     }
     case asBC_INCi:
     case asBC_DECi: {
         x86::Gp address = cc.new_gp32("address");
-        cc.mov(address,
-               x86::dword_ptr(
-                   regs_, offsetof(asSVMRegisters, valueRegister)));
+        LoadValueRegisterForwarded(address);
         if (instruction.op == asBC_INCi)
             cc.inc(x86::dword_ptr(address));
         else
@@ -353,9 +329,7 @@ EmitResult FunctionEmitter::EmitMemory(size_t index,
     case asBC_INCi8:
     case asBC_DECi8: {
         x86::Gp address = cc.new_gp32("address");
-        cc.mov(address,
-               x86::dword_ptr(
-                   regs_, offsetof(asSVMRegisters, valueRegister)));
+        LoadValueRegisterForwarded(address);
         if (instruction.op == asBC_INCi8)
             cc.inc(x86::byte_ptr(address));
         else
@@ -365,9 +339,7 @@ EmitResult FunctionEmitter::EmitMemory(size_t index,
     case asBC_INCi16:
     case asBC_DECi16: {
         x86::Gp address = cc.new_gp32("address");
-        cc.mov(address,
-               x86::dword_ptr(
-                   regs_, offsetof(asSVMRegisters, valueRegister)));
+        LoadValueRegisterForwarded(address);
         if (instruction.op == asBC_INCi16)
             cc.inc(x86::word_ptr(address));
         else
@@ -379,9 +351,7 @@ EmitResult FunctionEmitter::EmitMemory(size_t index,
         x86::Gp address = cc.new_gp32("address");
         x86::Vec value = cc.new_xmm_ss("incValue");
         x86::Vec one = cc.new_xmm_ss("incOne");
-        cc.mov(address,
-               x86::dword_ptr(
-                   regs_, offsetof(asSVMRegisters, valueRegister)));
+        LoadValueRegisterForwarded(address);
         const x86::Mem oneMem = cc.new_float_const(ConstPoolScope::kLocal, 1.0f);
         if (useAvx_) {
             cc.vmovss(value, x86::dword_ptr(address));
@@ -407,9 +377,7 @@ EmitResult FunctionEmitter::EmitMemory(size_t index,
         x86::Gp address = cc.new_gp32("address");
         x86::Vec value = cc.new_xmm_sd("incValue");
         x86::Vec one = cc.new_xmm_sd("incOne");
-        cc.mov(address,
-               x86::dword_ptr(
-                   regs_, offsetof(asSVMRegisters, valueRegister)));
+        LoadValueRegisterForwarded(address);
         const x86::Mem oneMem = cc.new_double_const(ConstPoolScope::kLocal, 1.0);
         if (useAvx_) {
             cc.vmovsd(value, x86::qword_ptr(address));
@@ -435,9 +403,7 @@ EmitResult FunctionEmitter::EmitMemory(size_t index,
         x86::Gp address = cc.new_gp32("address");
         x86::Gp low = cc.new_gp32("low");
         x86::Gp high = cc.new_gp32("high");
-        cc.mov(address,
-               x86::dword_ptr(
-                   regs_, offsetof(asSVMRegisters, valueRegister)));
+        LoadValueRegisterForwarded(address);
         cc.mov(low, x86::dword_ptr(address));
         cc.mov(high, x86::dword_ptr(address, 4));
         if (instruction.op == asBC_INCi64) {
@@ -462,9 +428,7 @@ EmitResult FunctionEmitter::EmitMemory(size_t index,
         x86::Gp address = cc.new_gp32("address");
         x86::Gp value = cc.new_gp32("value");
         cc.mov(address, Imm(int64_t((intptr_t)asBC_PTRARG(ip))));
-        cc.mov(x86::dword_ptr(
-                   regs_, offsetof(asSVMRegisters, valueRegister)),
-               address);
+        StoreValueRegisterForwarded(address);
         cc.mov(value, x86::dword_ptr(address));
         StoreVar(destination, value);
         return EmitResult::Success;

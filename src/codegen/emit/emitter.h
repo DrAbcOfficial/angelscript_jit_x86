@@ -46,6 +46,7 @@ private:
     bool AnalyzeCatchTargets();
     void AnalyzeReferenceCopyFusions();
     bool AnalyzeComparisonBranchFusions();
+    void AnalyzeValueRegisterForwards();
     bool IsValueRegisterDeadFrom(size_t start) const;
 
     bool InitializeCompiler();
@@ -82,6 +83,9 @@ private:
     void ReloadCachedLocals();
     void LoadSp(const asmjit::x86::Gp& destination);
     void StoreSp(const asmjit::x86::Gp& source);
+    void StoreValueRegisterForwarded(const asmjit::x86::Gp& value);
+    void LoadValueRegisterForwarded(const asmjit::x86::Gp& destination);
+    void FinishValueRegisterForward();
     bool EmitHelperCall(const Instruction& instruction, const asDWORD* ip);
     bool EmitInternalException(size_t index, const asDWORD* ip,
                                const char* message);
@@ -115,6 +119,9 @@ private:
     std::vector<uint8_t> fusedCmpBranch_;
     std::vector<uint8_t> fusedInvertBranch_;
     std::vector<int8_t> fusedFallValue_;
+    std::vector<uint8_t> vrForwardSpan_;
+    std::vector<uint8_t> vrForwardConsume_;
+    std::vector<uint8_t> vrForwardDead_;
 
     asmjit::CodeHolder code_;
     std::unique_ptr<asmjit::x86::Compiler> compiler_;
@@ -122,6 +129,11 @@ private:
     asmjit::x86::Gp regs_;
     asmjit::x86::Gp jitArg_;
     asmjit::x86::Gp fp_;
+    asmjit::x86::Gp vrShadow_;
+    bool vrProduce_ = false;
+    bool vrConsume_ = false;
+    bool vrActive_ = false;
+    bool vrDeadAfter_ = false;
     std::vector<asmjit::x86::Gp> cachedLocals_;
     std::vector<asmjit::Label> labels_;
     asmjit::Label exitLabel_;

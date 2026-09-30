@@ -75,9 +75,7 @@ EmitResult FunctionEmitter::EmitStack(size_t index,
         cc.mov(value, x86::dword_ptr(sp));
         cc.add(sp, AS_PTR_SIZE * 4);
         StoreSp(sp);
-        cc.mov(x86::dword_ptr(
-                   regs_, offsetof(asSVMRegisters, valueRegister)),
-               value);
+        StoreValueRegisterForwarded(value);
         return EmitResult::Success;
     }
     case asBC_PshRPtr: {
@@ -85,9 +83,7 @@ EmitResult FunctionEmitter::EmitStack(size_t index,
         x86::Gp value = cc.new_gp32("value");
         LoadSp(sp);
         cc.sub(sp, AS_PTR_SIZE * 4);
-        cc.mov(value,
-               x86::dword_ptr(
-                   regs_, offsetof(asSVMRegisters, valueRegister)));
+        LoadValueRegisterForwarded(value);
         cc.mov(x86::dword_ptr(sp), value);
         StoreSp(sp);
         return EmitResult::Success;

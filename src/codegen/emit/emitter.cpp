@@ -101,7 +101,13 @@ bool FunctionEmitter::EmitInstructions() {
         }
         const Instruction& instruction = instructions_[i];
         const asDWORD* ip = bytecode_ + instruction.off;
+        vrProduce_ = vrForwardSpan_[i] != 0;
+        vrConsume_ = vrForwardConsume_[i] != 0;
+        vrDeadAfter_ = vrForwardDead_[i] != 0;
         if (!EmitInstruction(i, instruction, ip)) return false;
+        if (vrConsume_) FinishValueRegisterForward();
+        vrProduce_ = false;
+        vrConsume_ = false;
     }
     return true;
 }
@@ -275,6 +281,41 @@ void FunctionEmitter::StoreSp(const asmjit::x86::Gp& source) {
     Compiler().mov(
         asmjit::x86::dword_ptr(regs_, offsetof(asSVMRegisters, stackPointer)),
         source);
+}
+
+void FunctionEmitter::StoreValueRegisterForwarded(
+    const asmjit::x86::Gp& value) {
+    if (!vrProduce_) {
+        Compiler().mov(
+            asmjit::x86::dword_ptr(
+                regs_, offsetof(asSVMRegisters, valueRegister)),
+            value);
+        return;
+    }
+    vrShadow_ = Compiler().new_gp32("vrShadow");
+    Compiler().mov(vrShadow_, value);
+    vrActive_ = true;
+}
+
+void FunctionEmitter::LoadValueRegisterForwarded(
+    const asmjit::x86::Gp& destination) {
+    if (vrActive_ && vrConsume_) {
+        Compiler().mov(destination, vrShadow_);
+        return;
+    }
+    Compiler().mov(destination,
+                   asmjit::x86::dword_ptr(
+                       regs_, offsetof(asSVMRegisters, valueRegister)));
+}
+
+void FunctionEmitter::FinishValueRegisterForward() {
+    if (!vrActive_) return;
+    if (!vrDeadAfter_)
+        Compiler().mov(
+            asmjit::x86::dword_ptr(
+                regs_, offsetof(asSVMRegisters, valueRegister)),
+            vrShadow_);
+    vrActive_ = false;
 }
 
 bool FunctionEmitter::EmitHelperCall(const Instruction& instruction,
