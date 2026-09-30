@@ -2011,13 +2011,25 @@ EmitResult FunctionEmitter::EmitCalls(size_t index,
                    Imm(int64_t((intptr_t)target)));
 
             const asDWORD paramSize = system->paramSize;
-            const void* shim = &detail::TryCallCdecl0;
+            // The shims have distinct arities; select by address so GCC
+            // does not reject the function-pointer conversions.
+            intptr_t shim = reinterpret_cast<intptr_t>(
+                &detail::TryCallCdecl0);
             switch (paramSize) {
-            case 1: shim = &detail::TryCallCdecl1; break;
-            case 2: shim = &detail::TryCallCdecl2; break;
-            case 3: shim = &detail::TryCallCdecl3; break;
-            case 4: shim = &detail::TryCallCdecl4; break;
-            default: break;
+            case 1:
+                shim = reinterpret_cast<intptr_t>(&detail::TryCallCdecl1);
+                break;
+            case 2:
+                shim = reinterpret_cast<intptr_t>(&detail::TryCallCdecl2);
+                break;
+            case 3:
+                shim = reinterpret_cast<intptr_t>(&detail::TryCallCdecl3);
+                break;
+            case 4:
+                shim = reinterpret_cast<intptr_t>(&detail::TryCallCdecl4);
+                break;
+            default:
+                break;
             }
             x86::Gp directArgs[4];
             for (asDWORD argument = 0; argument < paramSize; argument++) {
@@ -2028,7 +2040,7 @@ EmitResult FunctionEmitter::EmitCalls(size_t index,
             }
             err = Invoke(
                 Out<InvokeNode*>(invocation),
-                Imm(int64_t((intptr_t)shim)),
+                Imm(int64_t(shim)),
                 FuncSignature::build<asDWORD, asCContext*, asFUNCTION_t,
                                      asDWORD, asDWORD, asDWORD, asDWORD>());
             if (err != kErrorOk) return EmitResult::Error;
