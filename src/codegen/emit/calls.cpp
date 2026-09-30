@@ -1976,6 +1976,16 @@ EmitResult FunctionEmitter::EmitCalls(size_t index,
     case asBC_CALLSYS: {
         auto* target = engine_->scriptFunctions[asBC_INTARG(ip)];
         const bool fastSystemCall = detail::CanUseFastSystemCall(target);
+        // Direct path for plain cdecl scalar calls: emit FastSystemCall's
+        // bookkeeping inline and invoke the minimal try/catch shim with
+        // the arguments loaded straight off the value stack.
+        const asSSystemFunctionInterface* system = target->sysFuncIntf;
+        const bool directSystemCall =
+            fastSystemCall && system->callConv == ICC_CDECL &&
+            !system->auxiliary && system->paramSize <= 4 &&
+            system->hostReturnSize <= 1 &&
+            !target->returnType.IsObject() &&
+            !target->returnType.IsFuncdef();
         x86::Gp popDwords = cc.new_gp32("popDwords");
         cc.mov(x86::dword_ptr(regs_, ppOff),
                Imm(int64_t((intptr_t)ip)));
@@ -1988,33 +1998,87 @@ EmitResult FunctionEmitter::EmitCalls(size_t index,
         }
         InvokeNode* invocation = nullptr;
         Error err;
-        if (fastSystemCall) {
+        if (directSystemCall) {
+            x86::Gp sysSp = cc.new_gp32("directSysSp");
+            LoadSp(sysSp);
+            cc.mov(x86::dword_ptr(
+                       regs_, offsetof(asSVMRegisters, objectType)),
+                   Imm(int64_t((intptr_t)target->returnType.GetTypeInfo())));
+            x86::Gp sysCtx = cc.new_gp32("directSysCtx");
+            cc.mov(sysCtx,
+                   x86::dword_ptr(regs_, offsetof(asSVMRegisters, ctx)));
+            cc.mov(x86::dword_ptr(sysCtx, kCtxCallingSystemFunction),
+                   Imm(int64_t((intptr_t)target)));
+
+            const asDWORD paramSize = system->paramSize;
+            const void* shim = &detail::TryCallCdecl0;
+            switch (paramSize) {
+            case 1: shim = &detail::TryCallCdecl1; break;
+            case 2: shim = &detail::TryCallCdecl2; break;
+            case 3: shim = &detail::TryCallCdecl3; break;
+            case 4: shim = &detail::TryCallCdecl4; break;
+            default: break;
+            }
+            x86::Gp directArgs[4];
+            for (asDWORD argument = 0; argument < paramSize; argument++) {
+                directArgs[argument] = cc.new_gp32("directSysArg");
+                cc.mov(directArgs[argument],
+                       x86::dword_ptr(sysSp,
+                                      static_cast<int>(argument) * 4));
+            }
+            err = Invoke(
+                Out<InvokeNode*>(invocation),
+                Imm(int64_t((intptr_t)shim)),
+                FuncSignature::build<asDWORD, asCContext*, asFUNCTION_t,
+                                     asDWORD, asDWORD, asDWORD, asDWORD>());
+            if (err != kErrorOk) return EmitResult::Error;
+            invocation->set_arg(0, sysCtx);
+            invocation->set_arg(
+                1, Imm(int64_t((intptr_t)system->func)));
+            for (asDWORD argument = 0; argument < paramSize; argument++)
+                invocation->set_arg(2 + argument, directArgs[argument]);
+            if (system->hostReturnSize == 1) {
+                x86::Gp result = cc.new_gp32("directSysResult");
+                invocation->set_ret(0, result);
+                cc.mov(x86::dword_ptr(
+                           regs_,
+                           offsetof(asSVMRegisters, valueRegister)),
+                       result);
+            }
+            cc.mov(x86::dword_ptr(sysCtx, kCtxCallingSystemFunction),
+                   Imm(0));
+            cc.add(sysSp, int(paramSize) * 4);
+            StoreSp(sysSp);
+        } else if (fastSystemCall) {
             err = Invoke(
                 Out<InvokeNode*>(invocation),
                 Imm(int64_t((intptr_t)&detail::FastSystemCall)),
                 FuncSignature::build<int, asSVMRegisters*,
                                      asCScriptFunction*>());
+            if (err != kErrorOk) return EmitResult::Error;
+            invocation->set_arg(0, regs_);
+            invocation->set_arg(1, Imm(int64_t((intptr_t)target)));
+            invocation->set_ret(0, popDwords);
+            x86::Gp sp = cc.new_gp32("sp");
+            LoadSp(sp);
+            cc.shl(popDwords, 2);
+            cc.add(sp, popDwords);
+            StoreSp(sp);
         } else {
             err = Invoke(
                 Out<InvokeNode*>(invocation),
                 Imm(int64_t((intptr_t)&CallSystemFunction)),
                 FuncSignature::build<int, int, asCContext*>());
-        }
-        if (err != kErrorOk) return EmitResult::Error;
-        if (fastSystemCall) {
-            invocation->set_arg(0, regs_);
-            invocation->set_arg(1, Imm(int64_t((intptr_t)target)));
-        } else {
+            if (err != kErrorOk) return EmitResult::Error;
             invocation->set_arg(0, asBC_INTARG(ip));
             invocation->set_arg(1, context);
+            invocation->set_ret(0, popDwords);
+            x86::Gp sp = cc.new_gp32("sp");
+            LoadSp(sp);
+            cc.shl(popDwords, 2);
+            cc.add(sp, popDwords);
+            StoreSp(sp);
         }
-        invocation->set_ret(0, popDwords);
-
-        x86::Gp sp = cc.new_gp32("sp");
-        LoadSp(sp);
-        cc.shl(popDwords, 2);
-        cc.add(sp, popDwords);
-        StoreSp(sp);
         cc.mov(x86::dword_ptr(regs_, ppOff),
                Imm(int64_t((intptr_t)(ip + instruction.size))));
 

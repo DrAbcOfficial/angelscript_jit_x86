@@ -19,6 +19,8 @@ namespace asjitx86::emit {
 inline constexpr uint32_t kCtxStatus = offsetof(asCContext, m_status);
 inline constexpr uint32_t kCtxCurrentFunction =
     offsetof(asCContext, m_currentFunction);
+inline constexpr uint32_t kCtxCallingSystemFunction =
+    offsetof(asCContext, m_callingSystemFunction);
 inline constexpr uint32_t kCtxCallStack = offsetof(asCContext, m_callStack);
 inline constexpr uint32_t kCtxStackBlocks = offsetof(asCContext, m_stackBlocks);
 inline constexpr uint32_t kCtxStackIndex = offsetof(asCContext, m_stackIndex);

@@ -506,6 +506,52 @@ int FastSystemCall(asSVMRegisters* regs, asCScriptFunction* function) {
     return popDwords;
 }
 
+namespace {
+
+template <typename... Args>
+asDWORD TryCallCdecl(asCContext* ctx, asFUNCTION_t function,
+                     Args... args) {
+#ifdef AS_NO_EXCEPTIONS
+    (void)ctx;
+    return reinterpret_cast<asDWORD(ASJITX86_CDECL*)(Args...)>(
+        FuncPtrToUInt(function))(args...);
+#else
+    try {
+        return reinterpret_cast<asDWORD(ASJITX86_CDECL*)(Args...)>(
+            FuncPtrToUInt(function))(args...);
+    } catch (...) {
+        ctx->HandleAppException();
+        return 0;
+    }
+#endif
+}
+
+}  // namespace
+
+asDWORD TryCallCdecl0(asCContext* ctx, asFUNCTION_t function) {
+    return TryCallCdecl<>(ctx, function);
+}
+
+asDWORD TryCallCdecl1(asCContext* ctx, asFUNCTION_t function, asDWORD a) {
+    return TryCallCdecl<asDWORD>(ctx, function, a);
+}
+
+asDWORD TryCallCdecl2(asCContext* ctx, asFUNCTION_t function, asDWORD a,
+                      asDWORD b) {
+    return TryCallCdecl<asDWORD, asDWORD>(ctx, function, a, b);
+}
+
+asDWORD TryCallCdecl3(asCContext* ctx, asFUNCTION_t function, asDWORD a,
+                      asDWORD b, asDWORD c) {
+    return TryCallCdecl<asDWORD, asDWORD, asDWORD>(ctx, function, a, b, c);
+}
+
+asDWORD TryCallCdecl4(asCContext* ctx, asFUNCTION_t function, asDWORD a,
+                      asDWORD b, asDWORD c, asDWORD d) {
+    return TryCallCdecl<asDWORD, asDWORD, asDWORD, asDWORD>(ctx, function, a,
+                                                            b, c, d);
+}
+
 int FinishSystemCall(asSVMRegisters* regs) {
     auto* ctx = Ctx(regs);
     if (ctx->m_doSuspend) {
