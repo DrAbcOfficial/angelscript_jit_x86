@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <utility>
 #include <vector>
 
 class asCScriptEngine;
@@ -18,6 +19,8 @@ class ScalarObjectPool;
 }
 
 namespace asjitx86::emit {
+
+inline constexpr size_t kMaxCachedLocals = 10;
 
 struct Instruction {
     asEBCInstr op;
@@ -42,6 +45,7 @@ public:
 private:
     bool AnalyzeBytecode();
     bool DecodeInstructions();
+    void CollectCachedLocalOffsets();
     bool AnalyzeLabels();
     bool AnalyzeCatchTargets();
     void AnalyzeReferenceCopyFusions();
@@ -71,6 +75,7 @@ private:
     size_t EmitPackedFloatBinary(size_t index);
     size_t EmitPackedFloatImmediate(size_t index);
 
+    int CachedLocalSlot(int offset) const;
     void LoadVar(int offset, const asmjit::x86::Gp& destination);
     void StoreVar(int offset, const asmjit::x86::Gp& source);
     void LoadVar64(int offset, const asmjit::x86::Vec& destination);
@@ -86,6 +91,19 @@ private:
     void StoreValueRegisterForwarded(const asmjit::x86::Gp& value);
     void LoadValueRegisterForwarded(const asmjit::x86::Gp& destination);
     void FinishValueRegisterForward();
+    // Every C++ boundary must flush the cached locals before the call and
+    // reload them after: helpers and callees may read or rewrite frame
+    // slots (argument marshalling, exception cleanup).
+    template <typename Target, typename Signature>
+    asmjit::Error Invoke(asmjit::Out<asmjit::InvokeNode*> out,
+                         Target&& target, Signature&& signature) {
+        FlushCachedLocals();
+        asmjit::Error err = Compiler().invoke(
+            out, std::forward<Target>(target),
+            std::forward<Signature>(signature));
+        ReloadCachedLocals();
+        return err;
+    }
     bool EmitHelperCall(const Instruction& instruction, const asDWORD* ip);
     bool EmitInternalException(size_t index, const asDWORD* ip,
                                const char* message);
@@ -134,6 +152,7 @@ private:
     bool vrConsume_ = false;
     bool vrActive_ = false;
     bool vrDeadAfter_ = false;
+    std::vector<int> cachedLocalOffsets_;
     std::vector<asmjit::x86::Gp> cachedLocals_;
     std::vector<asmjit::Label> labels_;
     asmjit::Label exitLabel_;

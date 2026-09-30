@@ -51,8 +51,8 @@ EmitResult FunctionEmitter::EmitStack(size_t index,
             x86::Gp high = cc.new_gp32("high");
             LoadSp(sp);
             cc.sub(sp, 8);
-            cc.mov(low, x86::dword_ptr(fp_, -source * 4));
-            cc.mov(high, x86::dword_ptr(fp_, -source * 4 + 4));
+            LoadVar(source, low);
+            LoadVar(source - 1, high);
             cc.mov(x86::dword_ptr(sp), low);
             cc.mov(x86::dword_ptr(sp, 4), high);
             StoreSp(sp);

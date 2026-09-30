@@ -6,6 +6,7 @@
 #include "as_scriptengine.h"
 #include "as_scriptfunction.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdio>
 
@@ -64,13 +65,12 @@ bool FunctionEmitter::InitializeCompiler() {
                     regs_, offsetof(asSVMRegisters, stackFramePointer)));
 
     if (cacheLocals_) {
-        cachedLocals_.resize(
-            static_cast<size_t>(scriptFunction_->scriptData->variableSpace) +
-            1);
-        for (size_t offset = 1; offset < cachedLocals_.size(); offset++) {
-            cachedLocals_[offset] = cc.new_gp32("cachedLocal");
-            cc.mov(cachedLocals_[offset],
-                   x86::dword_ptr(fp_, -static_cast<int>(offset) * 4));
+        cachedLocals_.reserve(cachedLocalOffsets_.size());
+        for (size_t index = 0; index < cachedLocalOffsets_.size(); index++) {
+            cachedLocals_.push_back(cc.new_gp32("cachedLocal"));
+            cc.mov(cachedLocals_[index],
+                   x86::dword_ptr(
+                       fp_, -cachedLocalOffsets_[index] * 4));
         }
     }
 
@@ -132,21 +132,29 @@ bool FunctionEmitter::EmitInstruction(size_t index,
     return result == EmitResult::Success;
 }
 
+int FunctionEmitter::CachedLocalSlot(int offset) const {
+    if (!cacheLocals_) return -1;
+    const auto begin = cachedLocalOffsets_.begin();
+    const auto end = cachedLocalOffsets_.end();
+    const auto found = std::lower_bound(begin, end, offset);
+    if (found == end || *found != offset) return -1;
+    return static_cast<int>(found - begin);
+}
+
 void FunctionEmitter::LoadVar(int offset,
                               const asmjit::x86::Gp& destination) {
-    if (cacheLocals_ && offset > 0 &&
-        static_cast<size_t>(offset) < cachedLocals_.size())
-        Compiler().mov(destination,
-                       cachedLocals_[static_cast<size_t>(offset)]);
+    const int slot = CachedLocalSlot(offset);
+    if (slot >= 0)
+        Compiler().mov(destination, cachedLocals_[static_cast<size_t>(slot)]);
     else
         Compiler().mov(destination,
                        asmjit::x86::dword_ptr(fp_, -offset * 4));
 }
 
 void FunctionEmitter::StoreVar(int offset, const asmjit::x86::Gp& source) {
-    if (cacheLocals_ && offset > 0 &&
-        static_cast<size_t>(offset) < cachedLocals_.size())
-        Compiler().mov(cachedLocals_[static_cast<size_t>(offset)], source);
+    const int slot = CachedLocalSlot(offset);
+    if (slot >= 0)
+        Compiler().mov(cachedLocals_[static_cast<size_t>(slot)], source);
     else
         Compiler().mov(asmjit::x86::dword_ptr(fp_, -offset * 4), source);
 }
@@ -155,39 +163,65 @@ void FunctionEmitter::LoadVar64(int offset,
                                 const asmjit::x86::Vec& destination) {
     using namespace asmjit;
     auto& cc = Compiler();
-    if (cacheLocals_ && offset > 1 &&
-        static_cast<size_t>(offset) < cachedLocals_.size()) {
-        x86::Vec high = cc.new_xmm("cachedHigh64");
-        cc.movd(destination, cachedLocals_[static_cast<size_t>(offset)]);
-        cc.movd(high, cachedLocals_[static_cast<size_t>(offset - 1)]);
-        cc.psllq(high, 32);
-        cc.por(destination, high);
-    } else {
+    const int slot = CachedLocalSlot(offset);
+    const int highSlot = CachedLocalSlot(offset - 1);
+    if (slot < 0 && highSlot < 0) {
         cc.movq(destination, x86::qword_ptr(fp_, -offset * 4));
+        return;
     }
+    // At least one half lives in a register; assemble both halves from
+    // their authoritative locations so a half-cached pair stays coherent.
+    x86::Gp low = cc.new_gp32("cachedLow64");
+    x86::Gp high = cc.new_gp32("cachedHigh64");
+    x86::Vec packed = cc.new_xmm("cachedPack64");
+    if (slot >= 0)
+        cc.mov(low, cachedLocals_[static_cast<size_t>(slot)]);
+    else
+        cc.mov(low, x86::dword_ptr(fp_, -offset * 4));
+    if (highSlot >= 0)
+        cc.mov(high, cachedLocals_[static_cast<size_t>(highSlot)]);
+    else
+        cc.mov(high, x86::dword_ptr(fp_, -(offset - 1) * 4));
+    cc.movd(destination, low);
+    cc.movd(packed, high);
+    cc.psllq(packed, 32);
+    cc.por(destination, packed);
 }
 
 void FunctionEmitter::StoreVar64(int offset,
                                  const asmjit::x86::Vec& source) {
     using namespace asmjit;
     auto& cc = Compiler();
-    if (cacheLocals_ && offset > 1 &&
-        static_cast<size_t>(offset) < cachedLocals_.size()) {
-        x86::Vec high = cc.new_xmm("cachedHigh64");
-        cc.movd(cachedLocals_[static_cast<size_t>(offset)], source);
-        cc.movq(high, source);
-        cc.psrlq(high, 32);
-        cc.movd(cachedLocals_[static_cast<size_t>(offset - 1)], high);
-    } else {
+    const int slot = CachedLocalSlot(offset);
+    const int highSlot = CachedLocalSlot(offset - 1);
+    if (slot < 0 && highSlot < 0) {
         cc.movq(x86::qword_ptr(fp_, -offset * 4), source);
+        return;
     }
+    // Route each half to its authoritative location so the cached low
+    // half can never go stale behind the qword memory write.
+    x86::Gp low = cc.new_gp32("cachedLow64");
+    x86::Gp high = cc.new_gp32("cachedHigh64");
+    x86::Vec shifted = cc.new_xmm("cachedShift64");
+    cc.movd(low, source);
+    cc.movq(shifted, source);
+    cc.psrlq(shifted, 32);
+    cc.movd(high, shifted);
+    if (slot >= 0)
+        cc.mov(cachedLocals_[static_cast<size_t>(slot)], low);
+    else
+        cc.mov(x86::dword_ptr(fp_, -offset * 4), low);
+    if (highSlot >= 0)
+        cc.mov(cachedLocals_[static_cast<size_t>(highSlot)], high);
+    else
+        cc.mov(x86::dword_ptr(fp_, -(offset - 1) * 4), high);
 }
 
 void FunctionEmitter::LoadFloatVar(
     int offset, const asmjit::x86::Vec& destination) {
     using namespace asmjit;
     auto& cc = Compiler();
-    if (useSse_ && !cacheLocals_) {
+    if (useSse_ && CachedLocalSlot(offset) < 0) {
         const x86::Mem source = x86::dword_ptr(fp_, -offset * 4);
         if (useAvx_)
             cc.vmovss(destination, source);
@@ -208,7 +242,7 @@ void FunctionEmitter::StoreFloatVar(
     int offset, const asmjit::x86::Vec& source) {
     using namespace asmjit;
     auto& cc = Compiler();
-    if (useSse_ && !cacheLocals_) {
+    if (useSse_ && CachedLocalSlot(offset) < 0) {
         const x86::Mem destination = x86::dword_ptr(fp_, -offset * 4);
         if (useAvx_)
             cc.vmovss(destination, source);
@@ -228,7 +262,7 @@ void FunctionEmitter::StoreFloatVar(
 void FunctionEmitter::LoadDoubleVar(
     int offset, const asmjit::x86::Vec& destination) {
     using namespace asmjit;
-    if (useSse_ && !cacheLocals_) {
+    if (useSse_ && CachedLocalSlot(offset) < 0) {
         const x86::Mem source = x86::qword_ptr(fp_, -offset * 4);
         if (useAvx_)
             Compiler().vmovsd(destination, source);
@@ -242,7 +276,7 @@ void FunctionEmitter::LoadDoubleVar(
 void FunctionEmitter::StoreDoubleVar(
     int offset, const asmjit::x86::Vec& source) {
     using namespace asmjit;
-    if (useSse_ && !cacheLocals_) {
+    if (useSse_ && CachedLocalSlot(offset) < 0) {
         const x86::Mem destination = x86::qword_ptr(fp_, -offset * 4);
         if (useAvx_)
             Compiler().vmovsd(destination, source);
@@ -256,19 +290,19 @@ void FunctionEmitter::StoreDoubleVar(
 void FunctionEmitter::FlushCachedLocals() {
     if (!cacheLocals_) return;
     auto& cc = Compiler();
-    for (size_t offset = 1; offset < cachedLocals_.size(); offset++)
+    for (size_t index = 0; index < cachedLocals_.size(); index++)
         cc.mov(asmjit::x86::dword_ptr(
-                   fp_, -static_cast<int>(offset) * 4),
-               cachedLocals_[offset]);
+                   fp_, -cachedLocalOffsets_[index] * 4),
+               cachedLocals_[index]);
 }
 
 void FunctionEmitter::ReloadCachedLocals() {
     if (!cacheLocals_) return;
     auto& cc = Compiler();
-    for (size_t offset = 1; offset < cachedLocals_.size(); offset++)
-        cc.mov(cachedLocals_[offset],
+    for (size_t index = 0; index < cachedLocals_.size(); index++)
+        cc.mov(cachedLocals_[index],
                asmjit::x86::dword_ptr(
-                   fp_, -static_cast<int>(offset) * 4));
+                   fp_, -cachedLocalOffsets_[index] * 4));
 }
 
 void FunctionEmitter::LoadSp(const asmjit::x86::Gp& destination) {
@@ -369,6 +403,9 @@ bool FunctionEmitter::EmitInternalException(size_t index, const asDWORD* ip,
         invocation->set_ret(0, result);
         cc.test(result, result);
         cc.jnz(exitLabel_);
+        // Exception cleanup may have rewritten this frame's locals before
+        // control resumes at the catch block.
+        ReloadCachedLocals();
         cc.jmp(labels_[static_cast<size_t>(catchTarget)]);
     } else {
         Error err = cc.invoke(

@@ -878,7 +878,7 @@ EmitResult FunctionEmitter::EmitNumeric(size_t index,
         cc.bind(divide);
         cc.lea(outPtr, outMem);
         InvokeNode* invocation = nullptr;
-        Error err = cc.invoke(
+        Error err = Invoke(
             Out<InvokeNode*>(invocation),
             Imm(int64_t((intptr_t)(instruction.op == asBC_DIVi64 ? &DivI64To
                                                                  : &ModI64To))),
@@ -1355,7 +1355,7 @@ EmitResult FunctionEmitter::EmitNumeric(size_t index,
         cc.jz(divideByZero);
         cc.lea(outPtr, outMem);
         InvokeNode* invocation = nullptr;
-        Error err = cc.invoke(
+        Error err = Invoke(
             Out<InvokeNode*>(invocation),
             Imm(int64_t((intptr_t)(instruction.op == asBC_DIVu64 ? &DivU64To
                                                                  : &ModU64To))),
@@ -1448,7 +1448,7 @@ EmitResult FunctionEmitter::EmitNumeric(size_t index,
         LoadVar(left, leftBits);
         LoadVar(right, rightBits);
         InvokeNode* invocation = nullptr;
-        Error err = cc.invoke(
+        Error err = Invoke(
             Out<InvokeNode*>(invocation),
             Imm(int64_t((intptr_t)&ModFloatBits)),
             FuncSignature::build<asDWORD, asDWORD, asDWORD>());

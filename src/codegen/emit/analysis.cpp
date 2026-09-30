@@ -2,6 +2,8 @@
 
 #include "bytecode/bc_info.h"
 
+#include <algorithm>
+
 #include "as_objecttype.h"
 #include "as_scriptengine.h"
 #include "as_scriptfunction.h"
@@ -120,6 +122,25 @@ bool IsCacheableLocalOp(asEBCInstr op) {
     case asBC_BOR64:
     case asBC_BXOR64:
     case asBC_uTOi64:
+    // Ops below never access frame locals directly in their emitters
+    // (calls and object opcodes go through LoadVar/StoreVar or C++
+    // helpers whose boundaries flush the local cache), so functions
+    // containing them can still keep locals in registers.
+    case asBC_CALL:
+    case asBC_CALLSYS:
+    case asBC_CallPtr:
+    case asBC_CALLINTF:
+    case asBC_CALLBND:
+    case asBC_ALLOC:
+    case asBC_FREE:
+    case asBC_STOREOBJ:
+    case asBC_LOADOBJ:
+    case asBC_REFCPY:
+    case asBC_COPY:
+    case asBC_CHKREF:
+    case asBC_ChkRefS:
+    case asBC_ChkNullS:
+    case asBC_Cast:
         return true;
     default:
         return false;
@@ -365,17 +386,79 @@ bool FunctionEmitter::DecodeInstructions() {
     }
     if (offset != bytecodeLength_) return false;
     inlineFieldMemory_ = instructions_.size() <= 256;
-    bool hasDoubleArithmetic = false;
-    cacheLocals_ = scriptFunction_->scriptData &&
-                   scriptFunction_->scriptData->variableSpace <= 64;
+    cacheLocals_ = scriptFunction_->scriptData != nullptr;
+    unsigned floatOpCount = 0;
+    unsigned callBoundaryCount = 0;
+    unsigned branchCount = 0;
     for (const Instruction& instruction : instructions_) {
         cacheLocals_ = cacheLocals_ && IsCacheableLocalOp(instruction.op);
-        hasDoubleArithmetic = hasDoubleArithmetic ||
-            instruction.op == asBC_ADDd || instruction.op == asBC_SUBd ||
-            instruction.op == asBC_MULd || instruction.op == asBC_DIVd;
+        if (IsConditionalBranch(instruction.op) || instruction.op == asBC_JMP ||
+            instruction.op == asBC_JMPP)
+            branchCount++;
+        switch (instruction.op) {
+        case asBC_ADDf:
+        case asBC_SUBf:
+        case asBC_MULf:
+        case asBC_ADDIf:
+        case asBC_SUBIf:
+        case asBC_MULIf:
+            floatOpCount++;
+            break;
+        case asBC_CALL:
+        case asBC_CALLSYS:
+        case asBC_CallPtr:
+        case asBC_CALLINTF:
+        case asBC_CALLBND:
+        case asBC_ALLOC:
+            callBoundaryCount++;
+            break;
+        default:
+            break;
+        }
     }
-    cacheLocals_ = cacheLocals_ && hasDoubleArithmetic;
+    // Float arithmetic runs faster through the packed SSE windows, which
+    // are disabled under local caching; call-heavy bodies pay a
+    // flush/reload per boundary; branchy or oversized code falls back to
+    // helpers often enough that the per-call flush/reload dominates; tiny
+    // bodies never amortize the entry loads and exit flush.
+    cacheLocals_ = cacheLocals_ && inlineFieldMemory_ &&
+                   instructions_.size() >= 16 && floatOpCount < 2 &&
+                   callBoundaryCount <= 3 &&
+                   branchCount * 7 < instructions_.size();
+    if (cacheLocals_) CollectCachedLocalOffsets();
     return true;
+}
+
+void FunctionEmitter::CollectCachedLocalOffsets() {
+    // Only locals referenced by word operands of cacheable opcodes get a
+    // register; extra offsets would just consume registers, and a missing
+    // one only falls back to the frame slot.
+    cachedLocalOffsets_.clear();
+    const auto record = [&](int offset) {
+        if (offset <= 0) return;
+        if (std::find(cachedLocalOffsets_.begin(),
+                      cachedLocalOffsets_.end(),
+                      offset) == cachedLocalOffsets_.end())
+            cachedLocalOffsets_.push_back(offset);
+    };
+    for (const Instruction& instruction : instructions_) {
+        if (!IsCacheableLocalOp(instruction.op)) continue;
+        const asDWORD* ip = bytecode_ + instruction.off;
+        record(asBC_SWORDARG0(ip));
+        record(asBC_SWORDARG1(ip));
+        record(asBC_SWORDARG2(ip));
+    }
+    // 64-bit locals occupy slots (n, n-1); a half-cached pair would let the
+    // qword memory access in LoadVar64/StoreVar64 race the cached half.
+    for (size_t i = 0; i < cachedLocalOffsets_.size(); i++)
+        record(cachedLocalOffsets_[i] - 1);
+    std::sort(cachedLocalOffsets_.begin(), cachedLocalOffsets_.end());
+    // Bound register pressure; prefer the lowest offsets (temporaries and
+    // the hottest script locals live there).
+    if (cachedLocalOffsets_.size() > kMaxCachedLocals) {
+        cachedLocalOffsets_.resize(kMaxCachedLocals);
+        cacheLocals_ = cachedLocalOffsets_.size() >= 4;
+    }
 }
 
 bool FunctionEmitter::AnalyzeLabels() {

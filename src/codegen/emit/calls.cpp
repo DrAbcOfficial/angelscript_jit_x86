@@ -538,7 +538,7 @@ EmitResult FunctionEmitter::EmitCalls(size_t index,
         if (detail::IsScalarOnlyScriptObject(objectType) ||
             pooledGlobalDestructor) {
             auto* bucket = objectPool_.GetBucket(objectType);
-            err = cc.invoke(
+            err = Invoke(
                 Out<InvokeNode*>(invocation),
                 Imm(int64_t((intptr_t)&detail::CreatePooledScriptObject)),
                 FuncSignature::build<void*,
@@ -547,7 +547,7 @@ EmitResult FunctionEmitter::EmitCalls(size_t index,
                 invocation->set_arg(
                     0, Imm(int64_t((intptr_t)bucket)));
         } else {
-            err = cc.invoke(
+            err = Invoke(
                 Out<InvokeNode*>(invocation),
                 Imm(int64_t((intptr_t)&detail::CreateScriptObject)),
                 FuncSignature::build<void*, asSVMRegisters*,
@@ -1551,7 +1551,7 @@ EmitResult FunctionEmitter::EmitCalls(size_t index,
                 Label copied = cc.new_label();
                 cc.jz(copied);
                 InvokeNode* invocation = nullptr;
-                Error err = cc.invoke(
+                Error err = Invoke(
                     Out<InvokeNode*>(invocation),
                     Imm(int64_t((intptr_t)&AddRefScriptObject)),
                     FuncSignature::build<void, void*>());
@@ -1579,7 +1579,7 @@ EmitResult FunctionEmitter::EmitCalls(size_t index,
                 x86::Gp function = cc.new_gp32("inlineFunctionPointer");
                 loadValue(asBC_SWORDARG0(bodyIp), function);
                 InvokeNode* invocation = nullptr;
-                Error err = cc.invoke(
+                Error err = Invoke(
                     Out<InvokeNode*>(invocation),
                     Imm(int64_t((intptr_t)&detail::CallFunctionPointer)),
                     FuncSignature::build<int, asSVMRegisters*,
@@ -1605,7 +1605,7 @@ EmitResult FunctionEmitter::EmitCalls(size_t index,
                 cc.test(function, function);
                 cc.jz(released);
                 InvokeNode* invocation = nullptr;
-                Error err = cc.invoke(
+                Error err = Invoke(
                     Out<InvokeNode*>(invocation),
                     Imm(int64_t((intptr_t)&detail::ReleaseScriptFunction)),
                     FuncSignature::build<void, asCScriptFunction*>());
@@ -1648,7 +1648,7 @@ EmitResult FunctionEmitter::EmitCalls(size_t index,
             cc.test(object, object);
             cc.jz(slow);
             InvokeNode* guard = nullptr;
-            Error err = cc.invoke(
+            Error err = Invoke(
                 Out<InvokeNode*>(guard),
                 Imm(int64_t((intptr_t)&MatchesVirtualMethod)),
                 FuncSignature::build<bool, void*, int,
@@ -1686,7 +1686,7 @@ EmitResult FunctionEmitter::EmitCalls(size_t index,
             if (!EmitHelperCall(instruction, ip)) return EmitResult::Error;
         } else {
             InvokeNode* invocation = nullptr;
-            Error err = cc.invoke(
+            Error err = Invoke(
                 Out<InvokeNode*>(invocation),
                 Imm(int64_t((intptr_t)&detail::CallScriptFunction)),
                 FuncSignature::build<int, asSVMRegisters*,
@@ -1778,7 +1778,7 @@ EmitResult FunctionEmitter::EmitCalls(size_t index,
 
             cc.bind(slow);
             InvokeNode* invocation = nullptr;
-            Error err = cc.invoke(
+            Error err = Invoke(
                 Out<InvokeNode*>(invocation),
                 Imm(int64_t((intptr_t)&detail::CallScriptFunction)),
                 FuncSignature::build<int, asSVMRegisters*,
@@ -1809,6 +1809,7 @@ EmitResult FunctionEmitter::EmitCalls(size_t index,
             fastSimple && target->funcType == asFUNC_SCRIPT;
         Label slow;
         Label done;
+        if (nativeCandidate) FlushCachedLocals();
         if (nativeCandidate) {
             slow = cc.new_label();
             done = cc.new_label();
@@ -1897,13 +1898,14 @@ EmitResult FunctionEmitter::EmitCalls(size_t index,
                    tmp);
 
             InvokeNode* nativeInvocation = nullptr;
-            Error nativeError = cc.invoke(
+            Error nativeError = Invoke(
                 Out<InvokeNode*>(nativeInvocation), jitFn,
                 FuncSignature::build<void, asSVMRegisters*, asPWORD>());
             if (nativeError != kErrorOk) return EmitResult::Error;
             nativeInvocation->set_arg(0, regs_);
             nativeInvocation->set_arg(1, Imm(1));
 
+            ReloadCachedLocals();
             cc.cmp(x86::dword_ptr(ctx, kCtxStatus),
                    int(asEXECUTION_ACTIVE));
             cc.jne(exitLabel_);
@@ -1915,7 +1917,7 @@ EmitResult FunctionEmitter::EmitCalls(size_t index,
         }
 
         InvokeNode* invocation = nullptr;
-        Error err = cc.invoke(
+        Error err = Invoke(
             Out<InvokeNode*>(invocation),
             Imm(int64_t((intptr_t)(fastSimple ? &detail::FastCallSimpleScript
                                               : &detail::CallScriptFunction))),
@@ -1987,13 +1989,13 @@ EmitResult FunctionEmitter::EmitCalls(size_t index,
         InvokeNode* invocation = nullptr;
         Error err;
         if (fastSystemCall) {
-            err = cc.invoke(
+            err = Invoke(
                 Out<InvokeNode*>(invocation),
                 Imm(int64_t((intptr_t)&detail::FastSystemCall)),
                 FuncSignature::build<int, asSVMRegisters*,
                                      asCScriptFunction*>());
         } else {
-            err = cc.invoke(
+            err = Invoke(
                 Out<InvokeNode*>(invocation),
                 Imm(int64_t((intptr_t)&CallSystemFunction)),
                 FuncSignature::build<int, int, asCContext*>());
@@ -2024,14 +2026,14 @@ EmitResult FunctionEmitter::EmitCalls(size_t index,
         InvokeNode* finish = nullptr;
         const int catchTarget = localCatchTarget_[index];
         if (catchTarget >= 0) {
-            err = cc.invoke(
+            err = Invoke(
                 Out<InvokeNode*>(finish),
                 Imm(int64_t((intptr_t)&detail::FinishSystemCallAt)),
                 FuncSignature::build<int, asSVMRegisters*,
                                      asCScriptFunction*,
                                      const asSTryCatchInfo*, int>());
         } else {
-            err = cc.invoke(
+            err = Invoke(
                 Out<InvokeNode*>(finish),
                 Imm(int64_t((intptr_t)&detail::FinishSystemCall)),
                 FuncSignature::build<int, asSVMRegisters*>());

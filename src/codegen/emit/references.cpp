@@ -77,7 +77,7 @@ EmitResult FunctionEmitter::EmitReferences(
     auto& cc = Compiler();
     switch (instruction.op) {
     case asBC_PshVPtr: {
-        if (refCopyFusionSpan_[index]) {
+        if (!cacheLocals_ && refCopyFusionSpan_[index]) {
             const unsigned span = refCopyFusionSpan_[index];
             const asDWORD* copyIp =
                 bytecode_ + instructions_[index + 1].off;
@@ -98,7 +98,7 @@ EmitResult FunctionEmitter::EmitReferences(
 
             InvokeNode* invocation = nullptr;
             if (span == 4) {
-                Error err = cc.invoke(
+                Error err = Invoke(
                     Out<InvokeNode*>(invocation),
                     Imm(int64_t((intptr_t)(
                         functionObject ? &FastMoveScriptFunction
@@ -110,7 +110,7 @@ EmitResult FunctionEmitter::EmitReferences(
             } else {
                 x86::Gp source = cc.new_gp32("source");
                 cc.mov(source, x86::dword_ptr(sourceSlot));
-                Error err = cc.invoke(
+                Error err = Invoke(
                     Out<InvokeNode*>(invocation),
                     Imm(int64_t((intptr_t)(
                         functionObject ? &FastRefCopyScriptFunction
@@ -150,7 +150,7 @@ EmitResult FunctionEmitter::EmitReferences(
         auto* constructor =
             engine_->scriptFunctions[asBC_INTARG(ip + AS_PTR_SIZE)];
         InvokeNode* invocation = nullptr;
-        Error err = cc.invoke(
+        Error err = Invoke(
             Out<InvokeNode*>(invocation),
             Imm(int64_t((intptr_t)&detail::AllocScriptObject)),
             FuncSignature::build<int, asSVMRegisters*, asCObjectType*,
@@ -200,7 +200,7 @@ EmitResult FunctionEmitter::EmitReferences(
         if (scalarOnlyObject || pooledGlobalDestructor) {
             auto* bucket = objectPool_.GetBucket(objectType);
             if (pooledGlobalDestructor) {
-                err = cc.invoke(
+                err = Invoke(
                     Out<InvokeNode*>(invocation),
                     Imm(int64_t((intptr_t)&detail::
                         ReleasePooledScriptObjectWithGlobalDestructor)),
@@ -214,7 +214,7 @@ EmitResult FunctionEmitter::EmitReferences(
                     invocation->set_arg(4, destructorDelta);
                 }
             } else {
-                err = cc.invoke(
+                err = Invoke(
                     Out<InvokeNode*>(invocation),
                     Imm(int64_t((intptr_t)&detail::
                         ReleasePooledScriptObject)),
@@ -226,7 +226,7 @@ EmitResult FunctionEmitter::EmitReferences(
                     1, Imm(int64_t((intptr_t)bucket)));
             }
         } else {
-            err = cc.invoke(
+            err = Invoke(
                 Out<InvokeNode*>(invocation),
                 Imm(int64_t((intptr_t)(
                     functionObject ? &FastReleaseScriptFunction
@@ -235,7 +235,9 @@ EmitResult FunctionEmitter::EmitReferences(
         }
         if (err != kErrorOk) return EmitResult::Error;
         invocation->set_arg(0, object);
-        cc.mov(x86::dword_ptr(fp_, -offset * 4), 0);
+        x86::Gp released = cc.new_gp32("releasedSlot");
+        cc.xor_(released, released);
+        StoreVar(offset, released);
         cc.bind(done);
         cc.mov(x86::dword_ptr(regs_, ppOff),
                Imm(int64_t((intptr_t)(ip + instruction.size))));
@@ -263,7 +265,9 @@ EmitResult FunctionEmitter::EmitReferences(
         cc.mov(x86::dword_ptr(
                    regs_, offsetof(asSVMRegisters, objectRegister)),
                object);
-        cc.mov(x86::dword_ptr(fp_, -source * 4), 0);
+        x86::Gp zeroObject = cc.new_gp32("zeroObject");
+        cc.xor_(zeroObject, zeroObject);
+        StoreVar(source, zeroObject);
         return EmitResult::Success;
     }
     case asBC_GETOBJ:
@@ -327,7 +331,7 @@ EmitResult FunctionEmitter::EmitReferences(
                Imm(int64_t((intptr_t)ip)));
 
         InvokeNode* invocation = nullptr;
-        Error err = cc.invoke(
+        Error err = Invoke(
             Out<InvokeNode*>(invocation),
             Imm(int64_t((intptr_t)(
                 functionObject ? &FastRefCopyScriptFunction
@@ -359,7 +363,7 @@ EmitResult FunctionEmitter::EmitReferences(
         cc.jz(handled);
 
         InvokeNode* invocation = nullptr;
-        Error err = cc.invoke(
+        Error err = Invoke(
             Out<InvokeNode*>(invocation),
             Imm(int64_t((intptr_t)&TryScriptObjectCast)),
             FuncSignature::build<bool, void*, asCObjectType*>());
@@ -449,7 +453,7 @@ EmitResult FunctionEmitter::EmitReferences(
         cc.test(source, source);
         cc.jz(fallback);
         InvokeNode* invocation = nullptr;
-        Error err = cc.invoke(
+        Error err = Invoke(
             Out<InvokeNode*>(invocation),
             Imm(int64_t((intptr_t)&CopyBytes)),
             FuncSignature::build<void*, void*, const void*, asUINT>());
