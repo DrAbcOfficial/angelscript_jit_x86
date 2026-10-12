@@ -570,6 +570,12 @@ bool FunctionEmitter::IsValueRegisterDeadFrom(size_t start) const {
         visited[current] = 1;
         const Instruction& instruction = instructions_[current];
         if (WritesValueRegister(instruction.op)) return true;
+        // Read-and-preserve opcodes (RDR*/WRTV*/INC*/DEC*/PshRPtr) also
+        // consume the value register even though they leave it in place.
+        // The forwarded value must stay materialized until the last such
+        // consumer, otherwise the later consumer dereferences a stale
+        // (possibly null) value register.
+        if (ReadsValueRegister32(instruction.op)) return false;
         if (instruction.op == asBC_JMP) {
             const int targetIndex = BranchTargetIndex(
                 instruction, bytecode_ + instruction.off);

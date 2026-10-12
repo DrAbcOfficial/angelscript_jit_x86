@@ -281,6 +281,7 @@ int main(int argc, char** argv) {
         "classes_advanced.as", "operators.as", "handles.as", "lifetime_refs.as",
         "dictionary_handles.as", "shared_mixin.as", "funcptr_fallback.as",
         "funcdef_local_init.as", "object_member_init.as", "simd_float.as",
+        "postincr_vr.as",
     };
 
     bool jitActive = false;
